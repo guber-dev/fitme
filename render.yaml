@@ -1,0 +1,23 @@
+services:
+  - type: web
+    runtime: python
+    name: fitme-lol
+    region: ohio
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py --host 0.0.0.0 --port $PORT --origin "$FITME_ORIGIN" --require-invites
+    healthCheckPath: /healthz
+    numInstances: 1
+    envVars:
+      - key: FITME_ORIGIN
+        value: https://fitme.lol
+      - key: FITME_ENABLE_GENERATION
+        value: "0"
+      - key: GEMINI_IMAGE_MODEL
+        value: gemini-3.1-flash-image
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: FITME_INVITE_HASHES
+        sync: false
+      - key: DATABASE_URL
+        sync: false
