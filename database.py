@@ -33,7 +33,10 @@ def connect(path, database_url=None):
         # Serialize transactions across deploys as well as threads. Quota checks
         # and reservations must commit together before a paid request can run.
         with psycopg.connect(database_url, row_factory=row_factory, connect_timeout=15,
-                             sslmode='require', options='-c statement_timeout=20000') as connection:
+                             sslmode='require') as connection:
+            # Neon transaction pooling rejects this setting in startup options.
+            # SET LOCAL applies the same timeout only to the current transaction.
+            connection.execute('SET LOCAL statement_timeout = 20000')
             connection.execute('SELECT pg_advisory_xact_lock(741926482)')
             yield Postgres(connection)
     else:
