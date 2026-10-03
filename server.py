@@ -21,17 +21,14 @@ from urllib.parse import urlsplit
 from PIL import Image, ImageOps, UnidentifiedImageError
 from provider import GeminiProvider, GenerationError
 from database import connect
+import invitations
+from invitations import Problem
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / 'static' if (ROOT / 'static').is_dir() else ROOT
 MAX_BODY = 24 * 1024 * 1024
 Image.MAX_IMAGE_PIXELS = 25_000_000
 TTL = 24 * 3600
-
-
-class Problem(Exception):
-    def __init__(self, status, message):
-        self.status, self.message = status, message
 
 
 def normalize(blob):
@@ -88,10 +85,11 @@ def shop_url(value):
 
 
 class Store:
-    def __init__(self, path, provider=None, session_limit=5, total_limit=25, invite_hashes=None, database_url=None):
+    def __init__(self, path, provider=None, session_limit=5, total_limit=25, invite_hashes=None, database_url=None, admin_hash=None):
         self.path = str(path)
         self.database_url = database_url
         self.invite_hashes = set(invite_hashes or [])
+        self.admin_hash = admin_hash
         self.provider = provider
         self.session_limit, self.total_limit = session_limit, total_limit
         self.lock = threading.RLock()
@@ -106,6 +104,7 @@ class Store:
               UNIQUE(session, request_id));
             CREATE TABLE IF NOT EXISTS attempts (session TEXT, created REAL);
             """)
+            invitations.initialize(db)
             if database_url:
                 db.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS participant TEXT")
             elif "participant" not in {r[1] for r in db.execute("PRAGMA table_info(sessions)")}:
@@ -141,15 +140,22 @@ class Store:
             return db.execute("SELECT count(*) FROM attempts a JOIN sessions s ON a.session=s.id WHERE s.participant=?", (participant,)).fetchone()[0]
         return db.execute("SELECT count(*) FROM attempts WHERE session=?", (sid,)).fetchone()[0]
 
+    @property
+    def invites_required(self):
+        return bool(self.invite_hashes or self.admin_hash)
+
+    def invited(self, db, participant):
+        return participant in self.invite_hashes or invitations.active(db, participant)
+
     def unlock(self, sid, code):
-        if not self.invite_hashes:
+        if not self.invites_required:
             raise Problem(400, "Приглашение здесь не требуется.")
         if not isinstance(code, str) or not 16 <= len(code.strip()) <= 128:
             raise Problem(403, "Не удалось найти приглашение. Проверьте код.")
         hashed = hashlib.sha256(code.strip().encode()).hexdigest()
-        if hashed not in self.invite_hashes:
-            raise Problem(403, "Не удалось найти приглашение. Проверьте код.")
         with self.lock, self.db() as db:
+            if not self.invited(db, hashed):
+                raise Problem(403, "Приглашение недействительно, отозвано или срок ссылки истёк.")
             current = self.participant(db, sid)
             if current and current != hashed:
                 raise Problem(409, "В этом браузере уже используется другое приглашение.")
@@ -160,16 +166,16 @@ class Store:
         with self.db() as db:
             used = self.used(db, sid)
             total = db.execute("SELECT count(*) FROM attempts").fetchone()[0]
-            invited = self.participant(db, sid) in self.invite_hashes
+            invited = self.invited(db, self.participant(db, sid))
         return {"generation_enabled": bool(self.provider),
                 "remaining": max(0, min(self.session_limit-used, self.total_limit-total)),
-                "invite_required": bool(self.invite_hashes), "invited": invited,
+                "invite_required": self.invites_required, "invited": invited,
                 "retention_hours": 24}
 
     def create(self, sid, body):
-        if self.invite_hashes:
+        if self.invites_required:
             with self.db() as db:
-                if self.participant(db, sid) not in self.invite_hashes:
+                if not self.invited(db, self.participant(db, sid)):
                     raise Problem(403, "Введите код приглашения, чтобы начать примерку.")
         if body.get("consent") is not True:
             raise Problem(400, "Подтвердите отправку фотографий для примерки.")
@@ -182,6 +188,8 @@ class Store:
         link = shop_url(body.get("product_url", ""))
         fingerprint = hashlib.sha256(person + garment + link.encode()).hexdigest()
         with self.lock, self.db() as db:
+            if self.invites_required and not self.invited(db, self.participant(db, sid)):
+                raise Problem(403, "Приглашение больше не действует.")
             previous = db.execute("SELECT * FROM jobs WHERE session=? AND request_id=?", (sid, rid)).fetchone()
             if previous:
                 if previous["fingerprint"] != fingerprint:
@@ -333,11 +341,59 @@ class Handler(BaseHTTPRequestHandler):
         if getattr(self, "new_token", None):
             secure = "; Secure" if self.server.origin.startswith("https:") else ""
             self.send_header("Set-Cookie", f"fitme_session={self.new_token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800{secure}")
+        if getattr(self, "admin_cookie", None) is not None:
+            secure = "; Secure" if self.server.origin.startswith("https:") else ""
+            age = 28800 if self.admin_cookie else 0
+            self.send_header("Set-Cookie", f"fitme_admin={self.admin_cookie}; HttpOnly; SameSite=Strict; Path=/api/admin; Max-Age={age}{secure}")
         self.end_headers()
         self.wfile.write(data)
 
+    def read_json(self, limit):
+        if self.headers.get("Content-Type") != "application/json":
+            raise Problem(415, "Неверный формат запроса.")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise Problem(400, "Неверный размер запроса.")
+        if not 0 < length <= limit:
+            raise Problem(413, "Запрос слишком большой.")
+        try:
+            body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError()
+            return body
+        except (ValueError, OSError):
+            raise Problem(400, "Не удалось прочитать запрос.")
+
+    def admin_dispatch(self, path, cookie):
+        store = self.server.store
+        # Owner tools are same-origin only, including when a separate frontend is configured.
+        if self.command != 'GET' and self.headers.get('Origin') != self.server.origin:
+            raise Problem(403, 'Недопустимый адрес панели.')
+        token = cookie.get('fitme_admin')
+        token = token.value if token else ''
+        if path == '/api/admin/login' and self.command == 'POST':
+            self.admin_cookie = invitations.login(store, self.read_json(1024).get('key'))
+            return self.respond(200, {'ok': True})
+        invitations.authorize(store, token)
+        if path == '/api/admin/logout' and self.command == 'POST':
+            with store.db() as db:
+                db.execute('DELETE FROM admin_sessions WHERE token_hash=?', (invitations.digest(token),))
+            self.admin_cookie = ''
+            return self.respond(200, {'ok': True})
+        if path == '/api/admin/invitations':
+            if self.command == 'GET':
+                return self.respond(200, invitations.listing(store))
+            if self.command == 'POST':
+                return self.respond(201, invitations.create(store, self.read_json(1024).get('label')))
+        match = re.fullmatch(r'/api/admin/invitations/([a-f0-9]{32})/revoke', path)
+        if match and self.command == 'POST':
+            return self.respond(200, invitations.revoke(store, match[1]))
+        raise Problem(404, 'Страница не найдена.')
+
     def dispatch(self):
         self.new_token = None
+        self.admin_cookie = None
         try:
             path = urlsplit(self.path).path
             if self.command == "GET" and path == "/healthz":
@@ -359,13 +415,15 @@ class Handler(BaseHTTPRequestHandler):
                 cookie.load(self.headers.get("Cookie", ""))
             except Exception:
                 pass
+            if self.command == "GET" and path in ("/", "/app.js", "/style.css", "/favicon.svg", "/admin", "/admin.js", "/admin.css"):
+                filename = {"/": "index.html", "/admin": "admin.html"}.get(path, path[1:])
+                mime = {"html": "text/html; charset=utf-8", "js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8", "svg": "image/svg+xml"}[filename.split(".")[-1]]
+                return self.respond(200, (STATIC/filename).read_bytes(), mime)
+            if path.startswith('/api/admin/'):
+                return self.admin_dispatch(path, cookie)
             token = cookie.get("fitme_session")
             sid, self.new_token = self.server.store.session(token.value if token else "")
             self.server.store.cleanup()
-            if self.command == "GET" and path in ("/", "/app.js", "/style.css", "/favicon.svg"):
-                filename = {"/": "index.html"}.get(path, path[1:])
-                mime = {"html": "text/html; charset=utf-8", "js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8", "svg": "image/svg+xml"}[filename.split(".")[-1]]
-                return self.respond(200, (STATIC/filename).read_bytes(), mime)
             if self.command == "GET" and path == "/api/session":
                 with self.server.store.db() as db:
                     rows = db.execute("SELECT * FROM jobs WHERE session=? ORDER BY created DESC", (sid,)).fetchall()
@@ -375,21 +433,7 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute("DELETE FROM jobs WHERE session=?", (sid,))
                 return self.respond(200, {"deleted": True})
             if self.command == "POST":
-                if self.headers.get("Content-Type") != "application/json":
-                    raise Problem(415, "Неверный формат запроса.")
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                except ValueError:
-                    raise Problem(400, "Неверный размер запроса.")
-                if not 0 < length <= MAX_BODY:
-                    raise Problem(413, "Фотографии слишком большие.")
-                self.connection.settimeout(30)
-                try:
-                    body = json.loads(self.rfile.read(length))
-                    if not isinstance(body, dict):
-                        raise ValueError()
-                except (ValueError, OSError):
-                    raise Problem(400, "Не удалось прочитать запрос.")
+                body = self.read_json(MAX_BODY)
                 if path == "/api/invite":
                     return self.respond(200, self.server.store.unlock(sid, body.get("code")))
                 if path == "/api/jobs":
@@ -452,7 +496,10 @@ def main():
     invite_hashes = [value.strip() for value in config.get("FITME_INVITE_HASHES", "").split(",") if value.strip()]
     if any(not re.fullmatch(r"[a-f0-9]{64}", value) for value in invite_hashes):
         parser.error("FITME_INVITE_HASHES must contain comma-separated SHA256 hashes")
-    if args.require_invites and not invite_hashes:
+    admin_hash = config.get('FITME_ADMIN_HASH')
+    if admin_hash and not re.fullmatch(r'[a-f0-9]{64}', admin_hash):
+        parser.error('FITME_ADMIN_HASH must be a SHA256 hash')
+    if args.require_invites and not (invite_hashes or admin_hash):
         parser.error("At least one invitation hash is required for the hosted beta")
     data = args.data_dir
     data.mkdir(exist_ok=True, mode=0o700)
@@ -461,7 +508,7 @@ def main():
     database_url = config.get('DATABASE_URL')
     if config.get('RENDER') and not database_url:
         parser.error('DATABASE_URL is required on Render: ephemeral storage cannot safely preserve paid quotas')
-    store = Store(db_path, provider, invite_hashes=invite_hashes, database_url=database_url)
+    store = Store(db_path, provider, invite_hashes=invite_hashes, database_url=database_url, admin_hash=admin_hash)
     if not database_url:
         os.chmod(db_path, 0o600)
     origin = args.origin or f"http://{args.host}:{args.port}"

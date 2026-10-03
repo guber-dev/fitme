@@ -1,0 +1,11 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Приглашения · fitme.lol</title><link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/admin.css"><script src="/admin.js" defer></script></head><body><main>
+<header><a href="/">fitme<span>.lol</span></a><span>для владельца</span></header>
+<h1>Пригласить друзей</h1><p class="intro">Одна ссылка — и можно примерять.</p>
+<section id="login-panel"><form id="login-form"><label for="owner-key">Ключ владельца</label><input id="owner-key" type="password" autocomplete="current-password" required maxlength="128"><button id="login-button">Войти</button></form><p class="hint">Ключ открывает управление приглашениями. Не отправляйте его друзьям.</p></section>
+<p id="notice" role="status" hidden></p>
+<section id="owner-panel" hidden><div class="balance"><span>Осталось в общем тесте</span><strong id="balance">—</strong></div>
+<form id="create-form"><label for="label">Кого приглашаем?</label><input id="label" maxlength="60" placeholder="Например, Аня" required autocomplete="off"><button id="create-button">Создать ссылку</button></form>
+<p class="hint">Ссылка действует 7 дней. Пять попыток на ссылку, даже если её переслать. Новые ссылки не увеличивают общий лимит.</p>
+<section id="new-link" hidden><h2>Ссылка готова</h2><p>Скопируйте и отправьте другу. После закрытия страницы эта ссылка здесь не появится снова.</p><label for="invite-url">Персональная ссылка</label><input id="invite-url" readonly><button id="copy-button" type="button">Скопировать ссылку</button></section>
+<div class="list-heading"><h2>Приглашения</h2><button id="refresh" class="secondary" type="button">Обновить</button></div><div id="invitations"></div><button id="logout" class="secondary" type="button">Выйти</button></section>
+</main></body></html>

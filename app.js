@@ -1,4 +1,7 @@
 'use strict';
+// Fragments are not sent to the host or as referrers. Remove the bearer token immediately.
+let linkInvitation = new URLSearchParams(location.hash.slice(1)).get('invite');
+if (linkInvitation !== null) history.replaceState(null, '', location.pathname + location.search);
 const $ = id => document.getElementById(id);
 const apiBase = document.querySelector('meta[name="fitme-api"]')?.content || '';
 const previewOnly = apiBase === 'preview';
@@ -324,7 +327,19 @@ async function init() {
       else await draft('delete');
     } catch { /* No persistent browser storage; photos still work in this tab. */ }
     refreshUploads();
-    const info = await session();
+    let info = await session();
+    if (linkInvitation !== null) {
+      try {
+        await api('/api/invite', {method:'POST', body:JSON.stringify({code:linkInvitation})});
+        linkInvitation = null;
+        info = await session();
+        message('Приглашение принято. Добавьте своё фото, чтобы начать.');
+      } catch (error) {
+        $('invite-note').textContent = error.message + ' Откройте ссылку ещё раз для повтора или попросите новую у отправителя.';
+        $('invite-dialog').showModal();
+        linkInvitation = null;
+      }
+    }
     const pending = info.jobs.find(j => ['queued','running'].includes(j.status));
     const latest = info.jobs.find(j => j.request_id === state.requestId);
     if (pending) { renderJob(pending); pollJob(pending.id); }
