@@ -77,6 +77,7 @@ function setPhoto(src) {
   else $('main-photo').removeAttribute('src');
 }
 function refreshUploads() {
+  $('person-crop-open').hidden = !state.person;
   $('person-upload-label').textContent = state.person ? 'Заменить своё фото' : 'Выбрать своё фото';
   $('garment-zone').hidden = !!state.garment;
   $('garment-preview').hidden = !state.garment;
@@ -115,8 +116,7 @@ async function selectFile(kind, file) {
   try {
     const data = await prepareFile(file);
     if (!data) return;
-    state[kind] = data; state.requestId = null;
-    refreshUploads(); await saveDraft();
+    await openCrop(kind, data);
   } catch (error) { message(error.message); }
 }
 for (const kind of ['person', 'garment']) {
@@ -244,14 +244,25 @@ $('another').onclick = () => backToPhotos(true);
 $('retry-edit').onclick = () => backToPhotos(false);
 
 // Cropping is local; no file leaves the device until the user starts generation.
-$('crop-open').onclick = async () => {
+async function openCrop(kind, source = state[kind]) {
+  if (state.busy || !source || $('crop-dialog').open) return;
   try {
-    const img = await loadImage(state.garment);
+    const img = await loadImage(source);
+    if (state.busy || $('crop-dialog').open) return;
     const scale = Math.min(1, 700 / Math.max(img.naturalWidth, img.naturalHeight));
     const canvas = $('crop-canvas'); canvas.width = Math.round(img.naturalWidth * scale); canvas.height = Math.round(img.naturalHeight * scale);
-    state.crop = { img, rect: [0, 0, canvas.width, canvas.height], start: null }; drawCrop(); $('crop-dialog').showModal();
-  } catch { message('Не удалось открыть фото для обрезки.'); }
-};
+    // Explicit CSS dimensions preserve the image ratio even in a short viewport.
+    canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
+    canvas.style.width = `min(100%, ${canvas.width}px, calc(42dvh * ${canvas.width / canvas.height}))`;
+    state.crop = { kind, img, source, rect: [0, 0, canvas.width, canvas.height], start: null };
+    $('crop-title').textContent = kind === 'person' ? 'Ваше фото' : 'Фото вещи';
+    $('crop-help').textContent = kind === 'person' ? 'Оставьте лицо и верх тела в кадре. Выделите область пальцем или мышью либо используйте всё фото.' : 'Оставьте одну вещь без лишних деталей. Выделите область пальцем или мышью либо используйте всё фото.';
+    $('crop-error').hidden = true;
+    drawCrop(); $('crop-dialog').showModal();
+  } catch { message('Не удалось открыть фото для кадрирования.'); }
+}
+$('crop-open').onclick = () => openCrop('garment');
+$('person-crop-open').onclick = () => openCrop('person');
 function drawCrop() {
   const canvas = $('crop-canvas'), ctx = canvas.getContext('2d'), c = state.crop;
   if (!c) return;
@@ -266,23 +277,50 @@ function cropPoint(event) {
   // The canvas CSS keeps the same aspect ratio, so coordinates map directly.
   return [Math.max(0, Math.min(c.width, (event.clientX-r.left)*c.width/r.width)), Math.max(0, Math.min(c.height, (event.clientY-r.top)*c.height/r.height))];
 }
-$('crop-canvas').onpointerdown = e => { state.crop.start = cropPoint(e); $('crop-canvas').setPointerCapture(e.pointerId); };
+$('crop-canvas').onpointerdown = e => { if (!state.crop || state.crop.start || !e.isPrimary) return; state.crop.previousRect = [...state.crop.rect]; state.crop.start = cropPoint(e); $('crop-canvas').setPointerCapture(e.pointerId); };
 $('crop-canvas').onpointermove = e => {
   if (!state.crop?.start) return;
   const [a,b] = state.crop.start, [x,y] = cropPoint(e);
   state.crop.rect = [Math.min(a,x), Math.min(b,y), Math.abs(a-x), Math.abs(b-y)]; drawCrop();
 };
-$('crop-canvas').onpointerup = $('crop-canvas').onpointercancel = () => { if (state.crop) state.crop.start = null; };
+$('crop-canvas').onpointerup = () => { if (state.crop) state.crop.start = null; };
+$('crop-canvas').onpointercancel = () => { if (state.crop) { state.crop.rect = state.crop.previousRect; state.crop.start = null; drawCrop(); } };
+$('crop-canvas').onkeydown = event => {
+  if (!state.crop) return;
+  const canvas = $('crop-canvas');
+  let [x,y,w,h] = state.crop.rect;
+  const step = event.shiftKey ? 20 : 5;
+  if (event.key === 'ArrowLeft') x -= step;
+  else if (event.key === 'ArrowRight') x += step;
+  else if (event.key === 'ArrowUp') y -= step;
+  else if (event.key === 'ArrowDown') y += step;
+  else if (['+', '=', '-'].includes(event.key)) {
+    const factor = event.key === '-' ? 1.1 : .9;
+    const nw = Math.min(canvas.width, Math.max(30, w * factor));
+    const nh = Math.min(canvas.height, Math.max(30, h * factor));
+    x += (w - nw)/2; y += (h - nh)/2; w = nw; h = nh;
+  } else return;
+  event.preventDefault();
+  state.crop.rect = [Math.max(0,Math.min(canvas.width-w,x)), Math.max(0,Math.min(canvas.height-h,y)), w,h];
+  drawCrop();
+};
 $('crop-reset').onclick = () => { state.crop.rect = [0,0,$('crop-canvas').width,$('crop-canvas').height]; drawCrop(); };
 $('crop-close').onclick = () => $('crop-dialog').close();
+$('crop-dialog').addEventListener('close', () => { state.crop = null; const canvas = $('crop-canvas'); canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height); });
 $('crop-apply').onclick = async () => {
-  const c = state.crop, scale = c.img.naturalWidth / $('crop-canvas').width;
-  const [x,y,w,h] = c.rect.map(n => Math.round(n*scale));
-  if (w < 128 || h < 128) { $('crop-reset').click(); return; }
+  const c = state.crop;
+  if (!c || state.busy) return;
+  const canvas = $('crop-canvas');
+  const [rx,ry,rw,rh] = c.rect;
+  const x = Math.round(rx * c.img.naturalWidth / canvas.width), y = Math.round(ry * c.img.naturalHeight / canvas.height);
+  const w = Math.min(c.img.naturalWidth-x, Math.round(rw * c.img.naturalWidth / canvas.width));
+  const h = Math.min(c.img.naturalHeight-y, Math.round(rh * c.img.naturalHeight / canvas.height));
+  if (w < 128 || h < 128) { $('crop-error').textContent = 'Слишком маленький кадр. Выделите область побольше (минимум 128 × 128).'; $('crop-error').hidden = false; return; }
   const output = document.createElement('canvas'); output.width = w; output.height = h;
   output.getContext('2d').drawImage(c.img,x,y,w,h,0,0,w,h);
-  state.garment = output.toDataURL('image/jpeg',.92); state.requestId = null;
-  refreshUploads(); await saveDraft(); $('crop-dialog').close();
+  state[c.kind] = x === 0 && y === 0 && w === c.img.naturalWidth && h === c.img.naturalHeight ? c.source : output.toDataURL('image/jpeg',.92);
+  state.requestId = null;
+  refreshUploads(); $('crop-dialog').close(); await saveDraft();
 };
 for (const name of ['history', 'link', 'feedback', 'invite']) {
   $(`${name}-open`).onclick = () => $(`${name}-dialog`).showModal();

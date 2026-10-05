@@ -5,3 +5,5 @@
 @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition:none!important}}
 .invite-button{display:flex;justify-content:space-between;align-items:center;width:100%;min-height:38px;border:0;border-radius:14px;background:#eee9fb;color:#66509c;padding:9px 12px;margin:0 0 10px;font-size:12px}#invite-form label{font-size:13px}#invite-code{width:100%;padding:13px;border:1px solid #d8d3e0;border-radius:14px;margin:8px 0 16px;font-size:16px}#invite-note{font-size:13px;color:#8b4335}
 main{overflow:auto;overscroll-behavior:contain}#crop-canvas{object-fit:contain}
+
+#person-crop-open{display:block;margin:-5px 0 7px;min-height:32px;color:#66509c}#crop-canvas{max-height:none;border-radius:0;cursor:crosshair}#crop-error{color:#943f3f;font-size:13px}#crop-dialog .crop-actions{margin-top:12px}#crop-dialog>p{margin:10px 0}
