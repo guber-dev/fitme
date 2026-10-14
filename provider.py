@@ -33,9 +33,10 @@ class GeminiProvider:
         if not re.fullmatch(r"[a-zA-Z0-9.-]+", model):
             raise ValueError("Invalid model")
         self.key, self.model = key, model
+        self.prompt = Path(__file__).with_name("prompt.txt").read_text()
 
     def __call__(self, person, garment):
-        parts = [{"text": Path(__file__).with_name("prompt.txt").read_text()}]
+        parts = [{"text": self.prompt}]
         for blob in (person, garment):
             parts.append({"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(blob).decode()}})
         payload = {"contents": [{"role": "user", "parts": parts}],

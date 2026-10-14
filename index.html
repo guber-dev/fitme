@@ -8,7 +8,7 @@
 </head>
 <body>
 <div class="app-shell">
-  <header class="header"><a class="brand" href="./" aria-label="fitme — на главную">fitme</a><span class="header-note">ваша примерочная</span><button class="icon-button" id="privacy-open" aria-label="О ваших фото"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="4"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/></svg></button></header>
+  <header class="header"><a class="brand" href="./" aria-label="fitme — на главную">fitme</a><span class="header-note">ваша примерочная</span></header>
   <main>
     <div class="workspace">
       <section class="mirror" aria-label="Ваша примерочная">
@@ -30,14 +30,13 @@
           <div id="invite-banner" hidden><button id="invite-open" class="invite-button">Ввести код приглашения <span>→</span></button></div><div class="panel-heading"><h1>Сначала — ваше фото</h1><span class="step-count">01 / 03</span></div><p class="description">Лицо и верх тела в кадре. Руки не закрывают одежду.</p>
           <label class="upload-zone" id="person-zone"><input id="person-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif"><span class="upload-icon"><svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><rect x="4" y="5" width="20" height="19" rx="5" stroke="currentColor" stroke-width="1.5"/><path d="m7 20 5-6 4 4 3-3 5 6M14 2v8m-4-4 4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span><strong id="person-upload-label">Выбрать своё фото</strong><small>JPG, PNG, WebP · до 15 МБ</small></label>
           <button id="person-crop-open" class="text-button" hidden>Кадрировать своё фото ↗</button>
-          <button id="to-garment" class="primary" disabled>Выбрать вещь <span>→</span></button><p class="micro">Фото хранится 24 часа. Удалить можно в любой момент.</p>
+          <button id="to-garment" class="primary" disabled>Выбрать вещь <span>→</span></button>
         </section>
         <section id="garment-panel" class="panel" hidden>
           <div class="panel-heading"><h2>Что примерим?</h2><span class="step-count">02 / 03</span></div><p class="description">Добавьте фото или скриншот одной вещи.</p>
           <label class="upload-zone garment-zone" id="garment-zone"><input id="garment-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif"><span class="upload-icon"><svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="m10 5-7 4 4 7 3-2v10h12V14l3 2 4-7-7-4c-1 5-11 5-12 0z" transform="translate(-2 0)" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></span><strong id="garment-upload-label">Добавить фото вещи</strong><small>Футболка или простой верх · вид спереди</small></label>
           <div class="garment-preview" id="garment-preview" hidden><img id="garment-thumb" alt="Выбранная вещь"><div><strong>Ваша находка</strong><span>Верх · одна вещь</span><button id="crop-open" class="text-button">Обрезать фото ↗</button></div><button id="garment-replace" class="icon-button" aria-label="Заменить фото вещи">↻</button></div>
           <button id="link-open" class="back-link">＋ Ссылка на вещь <span>необязательно</span></button>
-          <label class="consent"><input id="consent" type="checkbox"><span>Согласен на обработку фото в Google Gemini. У меня есть разрешение на эти фото.</span></label>
           <button id="generate" class="primary" disabled>Примерить на себя <span>✳</span></button><p id="generation-note" class="micro"></p>
 
         </section>
@@ -60,6 +59,5 @@
 <button id="link-save" class="primary">Готово</button></dialog>
 <dialog id="feedback-dialog"><div class="dialog-heading"><h2>Как вам образ?</h2><button id="feedback-close" class="icon-button" aria-label="Закрыть оценку">×</button></div><div class="feedback"><strong>Как вам примерка?</strong><div><button data-rating="helpful">♡ Нравится</button><button data-rating="person">Не похож(а) на себя</button><button data-rating="garment">Вещь отличается</button><button data-rating="unhelpful">Не помогло</button></div><span id="feedback-note" aria-live="polite"></span></div></dialog>
   <dialog id="crop-dialog" aria-labelledby="crop-title"><div class="dialog-heading"><div><div class="eyebrow">ОСТАВЬТЕ ГЛАВНОЕ</div><h2 id="crop-title">Кадрирование фото</h2></div><button id="crop-close" class="icon-button" aria-label="Закрыть обрезку">×</button></div><p id="crop-help">Выделите нужную область пальцем или мышью. Можно оставить фото целиком.</p><canvas id="crop-canvas" width="640" height="640" tabindex="0" role="img" aria-label="Область кадрирования" aria-describedby="crop-help crop-keyboard"></canvas><p id="crop-keyboard" class="micro">С клавиатуры: + / − меняют размер кадра, стрелки перемещают его.</p><p id="crop-error" role="alert" hidden></p><div class="crop-actions"><button id="crop-reset" class="secondary">Всё фото</button><button id="crop-apply" class="primary">Использовать <span>✓</span></button></div></dialog>
-  <dialog id="privacy-dialog"><div class="dialog-heading"><h2>Ваши фото — ваши</h2><button id="privacy-close" class="icon-button" aria-label="Закрыть информацию о фото">×</button></div><p>При нажатии «Примерить» два фото отправляются в Google Gemini. До этого выбранные фото находятся только в вашем браузере.</p><p>На сервере фото и результаты доступны только вашей сессии и удаляются через 24 часа. У Google действуют собственные условия обработки данных.</p><p>Черновики фото на этом устройстве тоже хранятся не дольше 24 часов. Вы можете удалить их вместе со всеми своими примерками прямо сейчас.</p><p class="micro">Удаление не отменяет запрос, уже отправленный в Google. Мы не сохраним его результат. Счётчик попыток остаётся.</p><button id="delete-photos" class="danger-button">Удалить мои фото и примерки</button><span id="delete-note" aria-live="polite"></span></dialog>
 </body>
 </html>

@@ -51,7 +51,7 @@ async function saveDraft() {
 }
 function buttons() {
   $('to-garment').disabled = !state.person || state.busy;
-  $('generate').disabled = !state.person || !state.garment || !$('consent').checked || state.busy || !state.config.generation_enabled || (state.config.invite_required && !state.config.invited) || state.config.remaining === 0;
+  $('generate').disabled = !state.person || !state.garment || state.busy || !state.config.generation_enabled || (state.config.invite_required && !state.config.invited) || state.config.remaining === 0;
   $('step-result').disabled = !state.current;
   $('invite-banner').hidden = !state.config.invite_required || state.config.invited;
   $('generation-note').textContent = state.config.invite_required && !state.config.invited ? 'Введите приглашение на первом шаге.' : !state.config.generation_enabled ? 'Примерки пока выключены. Можно загрузить и обрезать фото.' : state.config.remaining === 0 ? 'Тестовые попытки закончились.' : `Осталось попыток: ${state.config.remaining}. Одна кнопка — одна примерка.`;
@@ -131,7 +131,6 @@ $('step-person').onclick = () => showStep('person');
 $('step-garment').onclick = () => state.person ? showStep('garment') : message('Сначала добавьте своё фото.');
 $('step-result').onclick = () => state.current && renderJob(state.current);
 $('garment-replace').onclick = () => $('garment-input').click();
-$('consent').onchange = buttons;
 $('product-url').oninput = () => { state.requestId = null; saveDraft(); };
 
 async function session() {
@@ -207,7 +206,7 @@ $('generate').onclick = async () => {
   state.requestId ||= crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
   await saveDraft();
   try {
-    const job = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ person: state.person, garment: state.garment, product_url: link, consent: $('consent').checked, request_id: state.requestId }) });
+    const job = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ person: state.person, garment: state.garment, product_url: link, request_id: state.requestId }) });
     state.current = job;
     await session(); renderJob(job); pollJob(job.id);
   } catch (error) {
@@ -237,7 +236,7 @@ async function backToPhotos(clearGarment) {
   }
   if (clearGarment) { state.garment = null; $('product-url').value = ''; }
   state.requestId = null; state.busy = false;
-  $('processing').hidden = true; $('consent').checked = false;
+  $('processing').hidden = true;
   refreshUploads(); showStep(state.person ? 'garment' : 'person'); await saveDraft(); await session();
 }
 $('another').onclick = () => backToPhotos(true);
@@ -344,20 +343,6 @@ $('link-save').onclick = () => {
   $('link-dialog').close();
 };
 $('fitting-open').onclick = () => { if (!state.busy) showStep(state.person ? 'garment' : 'person'); };
-$('privacy-open').onclick = () => $('privacy-dialog').showModal();
-$('privacy-close').onclick = () => $('privacy-dialog').close();
-$('delete-photos').onclick = async () => {
-  $('delete-photos').disabled = true;
-  try {
-    await api('/api/photos', { method: 'DELETE' });
-    clearTimeout(state.poll); await draft('delete');
-    state.person = state.garment = state.current = state.requestId = null; state.busy = false; state.jobs = [];
-    $('product-url').value = ''; $('consent').checked = false; $('processing').hidden = true;
-    $('delete-note').textContent = 'Ваши фото и примерки удалены.';
-    refreshUploads(); showStep('person'); await session();
-  } catch (error) { $('delete-note').textContent = error.message; }
-  finally { $('delete-photos').disabled = false; }
-};
 async function init() {
   try {
     try { draftDb = await openDraftDb(); const saved = await draft('get');
@@ -393,3 +378,38 @@ setInterval(async () => {
   refreshUploads();
   if (state.step !== 'result') { showStep('person'); message('Срок хранения черновиков истёк. Добавьте фото заново.'); }
 }, 60000);
+
+// First-party activity for accepted invitations only; no background/idle time.
+let activityVisit = null, activitySequence = 0, activitySeconds = 0;
+let activityTick = performance.now(), lastInteraction = performance.now(), lastActivity = performance.now();
+let activitySending = false;
+for (const event of ['pointerdown','pointermove','keydown','touchstart','scroll']) {
+  window.addEventListener(event, () => { lastInteraction = performance.now(); }, {passive:true});
+}
+function accountActivity() {
+  const now = performance.now(), delta = Math.min(5, Math.max(0, (now-activityTick)/1000));
+  if (!previewOnly && state.config.invited && document.visibilityState === 'visible' && document.hasFocus() && now-lastInteraction < 120000) {
+    if (!activityVisit || now-lastActivity > 1800000) {
+      activityVisit = Array.from(crypto.getRandomValues(new Uint8Array(16)), n=>n.toString(16).padStart(2,'0')).join('');
+      activitySequence = 0;
+    }
+    activitySeconds += delta; lastActivity = now;
+  }
+  activityTick = now;
+}
+async function flushActivity() {
+  accountActivity();
+  if (!activityVisit || !activitySeconds || activitySending || !state.config.invited) return;
+  const seconds = Math.min(30, activitySeconds); activitySeconds = 0; activitySending = true;
+  try {
+    await fetch(apiUrl('/api/activity'), {method:'POST',credentials:'include',keepalive:true,
+      headers:{'Content-Type':'application/json','X-Fitme-Request':'1'},
+      body:JSON.stringify({visit_id:activityVisit,sequence:++activitySequence,seconds})});
+  } catch { /* Analytics failure must never interrupt a fitting or retry paid requests. */ }
+  finally { activitySending = false; }
+}
+setInterval(accountActivity, 1000);
+setInterval(flushActivity, 30000);
+document.addEventListener('visibilitychange', flushActivity);
+window.addEventListener('pagehide', flushActivity);
+window.addEventListener('blur', flushActivity);

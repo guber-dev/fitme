@@ -3,6 +3,7 @@ import argparse
 import base64
 import hashlib
 import io
+import math
 import json
 import os
 import re
@@ -16,7 +17,7 @@ from contextlib import contextmanager
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 from provider import GeminiProvider, GenerationError
@@ -104,12 +105,37 @@ class Store:
               UNIQUE(session, request_id));
             CREATE TABLE IF NOT EXISTS attempts (session TEXT, created REAL);
             """)
+            db.executescript("""
+            CREATE TABLE IF NOT EXISTS invited_activity (
+              user_id TEXT PRIMARY KEY, active_seconds REAL DEFAULT 0, last_seen REAL);
+            CREATE TABLE IF NOT EXISTS engagement_visits (
+              id TEXT PRIMARY KEY, user_id TEXT, session TEXT, created REAL,
+              last_seen REAL, sequence INTEGER);
+            CREATE INDEX IF NOT EXISTS engagement_user ON engagement_visits(user_id);
+            """)
             invitations.initialize(db)
             if database_url:
                 db.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS participant TEXT")
             elif "participant" not in {r[1] for r in db.execute("PRAGMA table_info(sessions)")}:
                 db.execute("ALTER TABLE sessions ADD COLUMN participant TEXT")
             db.execute("CREATE INDEX IF NOT EXISTS sessions_participant ON sessions(participant)")
+            # The owner archive survives the 24-hour session history and user deletion.
+            db.executescript("""
+            CREATE TABLE IF NOT EXISTS generation_archive (
+              id TEXT PRIMARY KEY, user_id TEXT, session TEXT, status TEXT,
+              created REAL, elapsed REAL, wait_elapsed REAL, person BLOB, garment BLOB,
+              result BLOB, product_url TEXT, error TEXT, usage TEXT, feedback TEXT,
+              model TEXT, prompt TEXT);
+            CREATE INDEX IF NOT EXISTS archive_user_created ON generation_archive(user_id, created);
+            """)
+            db.execute("""INSERT INTO generation_archive
+              (id,user_id,session,status,created,elapsed,person,garment,result,product_url,error,usage,feedback)
+              SELECT j.id,COALESCE(s.participant,s.id),j.session,j.status,j.created,j.elapsed,
+                     j.person,j.garment,j.result,j.product_url,j.error,j.usage,j.feedback
+              FROM jobs j JOIN sessions s ON s.id=j.session
+              WHERE NOT EXISTS (SELECT 1 FROM generation_archive a WHERE a.id=j.id)""")
+            db.execute("UPDATE generation_archive SET status='error', error=? WHERE status IN ('queued','running')",
+                       ("Сервер был перезапущен. Примерка не повторялась автоматически; предыдущий запрос мог быть оплачен.",))
             db.execute("UPDATE jobs SET status='error', error=? WHERE status IN ('queued','running')",
                        ("Сервер был перезапущен. Примерка не повторялась автоматически; предыдущий запрос мог быть оплачен.",))
         self.worker = threading.Thread(target=self.work, daemon=True)
@@ -177,8 +203,6 @@ class Store:
             with self.db() as db:
                 if not self.invited(db, self.participant(db, sid)):
                     raise Problem(403, "Введите код приглашения, чтобы начать примерку.")
-        if body.get("consent") is not True:
-            raise Problem(400, "Подтвердите отправку фотографий для примерки.")
         rid = body.get("request_id")
         if not isinstance(rid, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{16,80}", rid):
             raise Problem(400, "Обновите страницу и попробуйте снова.")
@@ -206,6 +230,12 @@ class Store:
             jid, now = secrets.token_hex(16), time.time()
             db.execute("INSERT INTO jobs (id,session,request_id,fingerprint,status,created,person,garment,product_url) VALUES (?,?,?,?,?,?,?,?,?)",
                        (jid, sid, rid, fingerprint, "queued", now, person, garment, link))
+            user_id = self.participant(db, sid) or sid
+            db.execute("""INSERT INTO generation_archive
+              (id,user_id,session,status,created,person,garment,product_url,model,prompt)
+              VALUES (?,?,?,?,?,?,?,?,?,?)""",
+              (jid, user_id, sid, 'queued', now, person, garment, link,
+               getattr(self.provider, 'model', None), getattr(self.provider, 'prompt', None)))
             db.execute("INSERT INTO attempts VALUES (?,?)", (sid, now))
             row = db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         return self.public(row)
@@ -220,9 +250,119 @@ class Store:
             raise Problem(404, "Эта примерка недоступна или уже удалена.")
         return row
 
+    def activity(self, sid, body):
+        visit = body.get('visit_id')
+        sequence, seconds = body.get('sequence'), body.get('seconds')
+        if not isinstance(visit, str) or not re.fullmatch(r'[a-f0-9]{32}', visit):
+            raise Problem(400, 'Неверный визит.')
+        if type(sequence) is not int or not 1 <= sequence <= 1_000_000:
+            raise Problem(400, 'Неверный номер события.')
+        if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 <= seconds <= 45:
+            raise Problem(400, 'Неверное время активности.')
+        with self.lock, self.db() as db:
+            uid = self.participant(db, sid)
+            if not uid or uid == self.admin_hash or not self.invited(db, uid):
+                return {'tracked': False}
+            now = time.time()
+            previous = db.execute('SELECT * FROM engagement_visits WHERE id=?', (visit,)).fetchone()
+            if previous and (previous['user_id'] != uid or previous['session'] != sid):
+                raise Problem(409, 'Этот визит недоступен.')
+            if previous and sequence <= previous['sequence']:
+                return {'tracked': True}
+            # Cap claimed time by server time, and merge overlapping tabs per invite.
+            seconds = min(seconds, max(0, now-previous['last_seen']+1)) if previous else min(seconds, 30)
+            activity = db.execute('SELECT * FROM invited_activity WHERE user_id=?', (uid,)).fetchone()
+            credit = min(seconds, max(0, now-activity['last_seen'])) if activity else seconds
+            if previous:
+                db.execute('UPDATE engagement_visits SET last_seen=?,sequence=? WHERE id=?', (now, sequence, visit))
+            else:
+                db.execute('INSERT INTO engagement_visits VALUES (?,?,?,?,?,?)', (visit, uid, sid, now, now, sequence))
+            if activity:
+                db.execute('UPDATE invited_activity SET active_seconds=active_seconds+?,last_seen=? WHERE user_id=?', (credit, now, uid))
+            else:
+                db.execute('INSERT INTO invited_activity VALUES (?,?,?)', (uid, credit, now))
+        return {'tracked': True}
+
+    def dashboard(self):
+        with self.db() as db:
+            rows = db.execute("""WITH users AS (
+              SELECT DISTINCT COALESCE(s.participant,s.id) AS user_id FROM sessions s
+              WHERE s.participant IS NOT NULL OR EXISTS (SELECT 1 FROM attempts a WHERE a.session=s.id)
+              UNION SELECT user_id FROM generation_archive
+            ), counts AS (
+              SELECT COALESCE(s.participant,s.id) AS user_id,COUNT(*) AS generations,MAX(a.created) AS last_generation
+              FROM attempts a JOIN sessions s ON s.id=a.session GROUP BY COALESCE(s.participant,s.id)
+            ), metrics AS (
+              SELECT user_id,
+              SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS successful,
+              SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
+              SUM(CASE WHEN status IN ('queued','running') THEN 1 ELSE 0 END) AS pending,
+              AVG(CASE WHEN status='success' THEN wait_elapsed END) AS average_seconds
+              FROM generation_archive GROUP BY user_id
+            ), visits AS (
+              SELECT user_id,COUNT(*) AS visits FROM engagement_visits GROUP BY user_id
+            ) SELECT u.user_id,i.label,COALESCE(c.generations,0) AS generations,
+              c.last_generation,COALESCE(m.successful,0) AS successful,
+              COALESCE(m.errors,0) AS errors,COALESCE(m.pending,0) AS pending,m.average_seconds,
+              t.active_seconds,t.last_seen,COALESCE(v.visits,0) AS visits,
+              CASE WHEN i.id IS NOT NULL THEN 1 ELSE 0 END AS invitation_known
+              FROM users u LEFT JOIN counts c ON c.user_id=u.user_id
+              LEFT JOIN metrics m ON m.user_id=u.user_id
+              LEFT JOIN invitations i ON i.token_hash=u.user_id
+              LEFT JOIN invited_activity t ON t.user_id=u.user_id
+              LEFT JOIN visits v ON v.user_id=u.user_id
+              ORDER BY CASE WHEN c.last_generation IS NULL THEN 1 ELSE 0 END,c.last_generation DESC""").fetchall()
+            quality = db.execute("""SELECT
+              SUM(CASE WHEN feedback IS NOT NULL THEN 1 ELSE 0 END) AS rated,
+              SUM(CASE WHEN feedback='helpful' THEN 1 ELSE 0 END) AS helpful
+              FROM generation_archive WHERE status='success'""").fetchone()
+        users = [dict(r) for r in rows]
+        for user in users:
+            user['is_invited'] = user['user_id'] != self.admin_hash and bool(user.pop('invitation_known') or user['user_id'] in self.invite_hashes)
+
+            user['label'] = user['label'] or 'Участник ' + user['user_id'][:8]
+        totals = {'users': len(users), **{key: sum(u[key] for u in users) for key in ('generations','successful','errors','pending')}}
+        invited = [u for u in users if u['is_invited']]
+        measured = [u for u in invited if u['visits'] > 0]
+        completed = totals['successful']+totals['errors']
+        return {'users': users, 'totals': totals, 'engagement': {
+            'invited_users': len(invited), 'measured_users': len(measured),
+            'average_active_seconds': sum(u['active_seconds'] or 0 for u in measured)/len(measured) if measured else None,
+            'visits': sum(u['visits'] for u in measured),
+            'activated_users': sum(u['generations'] > 0 for u in invited),
+            'repeat_users': sum(u['generations'] > 1 for u in invited),
+            'success_rate': totals['successful']/completed if completed else None,
+            'rated': quality['rated'] or 0, 'helpful': quality['helpful'] or 0
+        }}
+
+    def archive(self, user_id=None, offset=0, status=None):
+        clauses, params = [], []
+        if user_id:
+            clauses.append('a.user_id=?'); params.append(user_id)
+        if status:
+            clauses.append('a.status=?'); params.append(status)
+        where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
+        with self.db() as db:
+            total = db.execute('SELECT COUNT(*) FROM generation_archive a'+where, params).fetchone()[0]
+            rows = db.execute("""SELECT a.id,a.user_id,i.label,a.status,a.created,a.elapsed,
+              a.wait_elapsed,a.product_url,a.error,a.feedback,a.model,a.prompt,
+              CASE WHEN a.person IS NOT NULL THEN 1 ELSE 0 END AS has_person,
+              CASE WHEN a.garment IS NOT NULL THEN 1 ELSE 0 END AS has_garment,
+              CASE WHEN a.result IS NOT NULL THEN 1 ELSE 0 END AS has_result
+              FROM generation_archive a LEFT JOIN invitations i ON i.token_hash=a.user_id"""
+              + where + ' ORDER BY a.created DESC,a.id DESC LIMIT 20 OFFSET ?', (*params, offset)).fetchall()
+        jobs = [dict(r) for r in rows]
+        for job in jobs:
+            job['label'] = job['label'] or 'Участник ' + job['user_id'][:8]
+        return {'jobs': jobs, 'total': total, 'offset': offset, 'limit': 20}
+
     def cleanup(self):
         with self.lock, self.db() as db:
-            db.execute("DELETE FROM jobs WHERE created < ?", (time.time()-TTL,))
+            cutoff = time.time()-TTL
+            db.execute("""UPDATE generation_archive SET status='error',error=?
+              WHERE status='queued' AND id IN (SELECT id FROM jobs WHERE status='queued' AND created<?)""",
+              ('Примерка не запущена: срок ожидания истёк.', cutoff))
+            db.execute("DELETE FROM jobs WHERE created < ?", (cutoff,))
 
     def work(self):
         while not self.stop.wait(2 if self.database_url else .2):
@@ -238,6 +378,7 @@ class Store:
                     row = db.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created LIMIT 1").fetchone()
                     if row:
                         db.execute("UPDATE jobs SET status='running' WHERE id=?", (row["id"],))
+                        db.execute("UPDATE generation_archive SET status='running' WHERE id=?", (row["id"],))
             except Exception:
                 continue
             if not row:
@@ -251,11 +392,14 @@ class Store:
                 values = ("error", None, str(error), json.dumps(error.usage), time.monotonic()-start, row["id"])
             except Exception:
                 values = ("error", None, "Не удалось обработать результат. Попробуйте другое фото.", None, time.monotonic()-start, row["id"])
+            wait_elapsed = max(0, time.time()-row['created'])
             # Retry only storing the result, never the paid generation itself.
             while not self.stop.is_set():
                 try:
                     with self.lock, self.db() as db:
                         db.execute("UPDATE jobs SET status=?,result=?,error=?,usage=?,elapsed=? WHERE id=?", values)
+                        db.execute("UPDATE generation_archive SET status=?,result=?,error=?,usage=?,elapsed=?,wait_elapsed=? WHERE id=?",
+                                   (*values[:5], wait_elapsed, row['id']))
                     break
                 except Exception:
                     self.stop.wait(5)
@@ -381,6 +525,31 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute('DELETE FROM admin_sessions WHERE token_hash=?', (invitations.digest(token),))
             self.admin_cookie = ''
             return self.respond(200, {'ok': True})
+        if self.command == 'GET' and path == '/api/admin/dashboard':
+            return self.respond(200, store.dashboard())
+        if self.command == 'GET' and path == '/api/admin/generations':
+            query = parse_qs(urlsplit(self.path).query)
+            user_id = query.get('user', [None])[0]
+            status = query.get('status', [None])[0]
+            try:
+                offset = int(query.get('offset', ['0'])[0])
+                if offset < 0 or offset > 1_000_000:
+                    raise ValueError()
+            except ValueError:
+                raise Problem(400, 'Неверная страница архива.') from None
+            if user_id and not re.fullmatch(r'[a-f0-9]{64}', user_id):
+                raise Problem(400, 'Неверный пользователь.')
+            if status and status not in ('success', 'error', 'queued', 'running'):
+                raise Problem(400, 'Неверный статус.')
+            return self.respond(200, store.archive(user_id, offset, status))
+        photo = re.fullmatch(r'/api/admin/generations/([a-f0-9]{32})/(person|garment|result)', path)
+        if self.command == 'GET' and photo:
+            jid, part = photo.groups()
+            with store.db() as db:
+                row = db.execute(f'SELECT {part} FROM generation_archive WHERE id=?', (jid,)).fetchone()
+            if not row or not row[part]:
+                raise Problem(404, 'Фото недоступно.')
+            return self.respond(200, bytes(row[part]), 'image/jpeg')
         if path == '/api/admin/invitations':
             if self.command == 'GET':
                 return self.respond(200, invitations.listing(store))
@@ -408,7 +577,7 @@ class Handler(BaseHTTPRequestHandler):
             peer = self.headers.get("X-Real-IP", self.client_address[0]) if self.server.trust_proxy else self.client_address[0]
             self.server.rate_limit(peer, self.command != "GET")
             if self.command != "GET":
-                if self.headers.get("Origin") != self.server.frontend_origin or self.headers.get("X-Fitme-Request") != "1":
+                if self.headers.get("Origin") != (self.server.origin if path.startswith("/api/admin/") else self.server.frontend_origin) or self.headers.get("X-Fitme-Request") != "1":
                     raise Problem(403, "Запрос отклонён. Откройте приложение заново.")
             cookie = SimpleCookie()
             try:
@@ -423,6 +592,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.admin_dispatch(path, cookie)
             token = cookie.get("fitme_session")
             sid, self.new_token = self.server.store.session(token.value if token else "")
+            if self.command == 'POST' and path == '/api/activity':
+                return self.respond(200, self.server.store.activity(sid, self.read_json(1024)))
             self.server.store.cleanup()
             if self.command == "GET" and path == "/api/session":
                 with self.server.store.db() as db:
@@ -430,6 +601,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, {**self.server.store.config(sid), "jobs": [self.server.store.public(r) for r in rows]})
             if self.command == "DELETE" and path == "/api/photos":
                 with self.server.store.lock, self.server.store.db() as db:
+                    db.execute("""UPDATE generation_archive SET status='error',error=?
+                      WHERE status='queued' AND id IN (SELECT id FROM jobs WHERE session=? AND status='queued')""",
+                      ('Примерка отменена до запуска пользователем.', sid))
                     db.execute("DELETE FROM jobs WHERE session=?", (sid,))
                 return self.respond(200, {"deleted": True})
             if self.command == "POST":
@@ -453,6 +627,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise Problem(400, "Выберите оценку.")
                     with self.server.store.db() as db:
                         db.execute("UPDATE jobs SET feedback=? WHERE id=? AND session=?", (value, jid, sid))
+                        db.execute("UPDATE generation_archive SET feedback=? WHERE id=? AND session=?", (value, jid, sid))
                     return self.respond(200, {"saved": True})
             raise Problem(404, "Страница не найдена.")
         except Problem as error:
