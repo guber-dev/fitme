@@ -28,6 +28,10 @@ from invitations import Problem
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / 'static' if (ROOT / 'static').is_dir() else ROOT
 MAX_BODY = 24 * 1024 * 1024
+MAX_GARMENTS = 6
+CATEGORIES = ('Вещь', 'Футболка', 'Рубашка', 'Свитер', 'Худи', 'Куртка', 'Пальто',
+              'Джинсы', 'Брюки', 'Шорты', 'Юбка', 'Платье', 'Костюм', 'Кроссовки',
+              'Обувь', 'Кепка', 'Головной убор', 'Сумка', 'Очки', 'Аксессуар')
 Image.MAX_IMAGE_PIXELS = 25_000_000
 TTL = 24 * 3600
 
@@ -128,10 +132,21 @@ class Store:
               model TEXT, prompt TEXT);
             CREATE INDEX IF NOT EXISTS archive_user_created ON generation_archive(user_id, created);
             """)
+            for table in ('jobs', 'generation_archive'):
+                if database_url:
+                    db.execute(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS garments TEXT')
+                elif 'garments' not in {r[1] for r in db.execute(f'PRAGMA table_info({table})')}:
+                    db.execute(f'ALTER TABLE {table} ADD COLUMN garments TEXT')
+            db.executescript("""
+            CREATE TABLE IF NOT EXISTS clothing_classifications (
+              id TEXT PRIMARY KEY, user_id TEXT, fingerprint TEXT, created REAL,
+              category TEXT, usage TEXT);
+            CREATE INDEX IF NOT EXISTS classifications_user ON clothing_classifications(user_id, created);
+            """)
             db.execute("""INSERT INTO generation_archive
-              (id,user_id,session,status,created,elapsed,person,garment,result,product_url,error,usage,feedback)
+              (id,user_id,session,status,created,elapsed,person,garment,result,product_url,error,usage,feedback,garments)
               SELECT j.id,COALESCE(s.participant,s.id),j.session,j.status,j.created,j.elapsed,
-                     j.person,j.garment,j.result,j.product_url,j.error,j.usage,j.feedback
+                     j.person,j.garment,j.result,j.product_url,j.error,j.usage,j.feedback,j.garments
               FROM jobs j JOIN sessions s ON s.id=j.session
               WHERE NOT EXISTS (SELECT 1 FROM generation_archive a WHERE a.id=j.id)""")
             db.execute("UPDATE generation_archive SET status='error', error=? WHERE status IN ('queued','running')",
@@ -194,6 +209,8 @@ class Store:
             total = db.execute("SELECT count(*) FROM attempts").fetchone()[0]
             invited = self.invited(db, self.participant(db, sid))
         return {"generation_enabled": bool(self.provider),
+                "classification_enabled": callable(getattr(self.provider, 'classify', None)),
+                "max_garments": MAX_GARMENTS,
                 "remaining": max(0, min(self.session_limit-used, self.total_limit-total)),
                 "invite_required": self.invites_required, "invited": invited,
                 "retention_hours": 24}
@@ -208,9 +225,25 @@ class Store:
             raise Problem(400, "Обновите страницу и попробуйте снова.")
         # Normalize before hashing to make idempotency independent of image metadata.
         with self.lock:
-            person, garment = decode_image(body.get("person")), decode_image(body.get("garment"))
+            person = decode_image(body.get('person'))
+            items = body.get('garments')
+            if items is None:
+                items = [{'image': body.get('garment'), 'category': 'Вещь'}]
+            if not isinstance(items, list) or not 1 <= len(items) <= MAX_GARMENTS:
+                raise Problem(400, 'Добавьте от 1 до 6 вещей для образа.')
+            packed = []
+            images = []
+            for item in items:
+                if not isinstance(item, dict) or item.get('category', 'Вещь') not in CATEGORIES:
+                    raise Problem(400, 'Выберите тип вещи из списка.')
+                image = decode_image(item.get('image'))
+                images.append(image)
+                packed.append({'image': base64.b64encode(image).decode(), 'category': item.get('category', 'Вещь')})
+            garment = images[0]
+            garments = json.dumps(packed, ensure_ascii=False, separators=(',', ':'))
         link = shop_url(body.get("product_url", ""))
-        fingerprint = hashlib.sha256(person + garment + link.encode()).hexdigest()
+        fingerprint = hashlib.sha256(person + b''.join(images) + link.encode() +
+                                     (json.dumps([p['category'] for p in packed]).encode() if 'garments' in body else b'')).hexdigest()
         with self.lock, self.db() as db:
             if self.invites_required and not self.invited(db, self.participant(db, sid)):
                 raise Problem(403, "Приглашение больше не действует.")
@@ -225,23 +258,64 @@ class Store:
                 raise Problem(409, "Одна примерка уже создаётся. Дождитесь результата.")
             total = db.execute("SELECT count(*) FROM attempts").fetchone()[0]
             used = self.used(db, sid)
+            participant = self.participant(db, sid)
             if used >= self.session_limit or total >= self.total_limit:
                 raise Problem(429, "Лимит тестовых примерок исчерпан. Сообщите владельцу приложения.")
             jid, now = secrets.token_hex(16), time.time()
-            db.execute("INSERT INTO jobs (id,session,request_id,fingerprint,status,created,person,garment,product_url) VALUES (?,?,?,?,?,?,?,?,?)",
-                       (jid, sid, rid, fingerprint, "queued", now, person, garment, link))
+            db.execute("INSERT INTO jobs (id,session,request_id,fingerprint,status,created,person,garment,product_url,garments) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                       (jid, sid, rid, fingerprint, "queued", now, person, garment, link, garments))
             user_id = self.participant(db, sid) or sid
             db.execute("""INSERT INTO generation_archive
-              (id,user_id,session,status,created,person,garment,product_url,model,prompt)
-              VALUES (?,?,?,?,?,?,?,?,?,?)""",
+              (id,user_id,session,status,created,person,garment,product_url,model,prompt,garments)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
               (jid, user_id, sid, 'queued', now, person, garment, link,
-               getattr(self.provider, 'model', None), getattr(self.provider, 'prompt', None)))
+               getattr(self.provider, 'model', None), getattr(self.provider, 'prompt', None), garments))
             db.execute("INSERT INTO attempts VALUES (?,?)", (sid, now))
             row = db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         return self.public(row)
 
     def public(self, row):
-        return {key: row[key] for key in ("id", "request_id", "status", "created", "elapsed", "product_url", "error", "feedback")}
+        result = {key: row[key] for key in ("id", "request_id", "status", "created", "elapsed", "product_url", "error", "feedback")}
+        result['garments'] = [{'category': item['category'], 'index': i}
+                              for i, item in enumerate(self.items(row))]
+        return result
+
+    def items(self, row):
+        return json.loads(row['garments']) if row['garments'] else [
+            {'image': base64.b64encode(row['garment']).decode(), 'category': 'Вещь'}]
+
+    def classify(self, sid, body):
+        classifier = getattr(self.provider, 'classify', None)
+        if not callable(classifier):
+            raise Problem(503, 'Выберите тип вещи вручную.')
+        with self.lock, self.db() as db:
+            uid = self.participant(db, sid) or sid
+            if self.invites_required and not self.invited(db, uid):
+                raise Problem(403, 'Сначала введите приглашение.')
+            image = decode_image(body.get('image'))
+            fingerprint = hashlib.sha256(image).hexdigest()
+            cutoff = time.time() - TTL
+            cached = db.execute('SELECT category FROM clothing_classifications WHERE user_id=? AND fingerprint=? AND created>? ORDER BY created DESC LIMIT 1', (uid, fingerprint, cutoff)).fetchone()
+            if cached:
+                return {'category': cached[0] or 'Вещь'}
+            used = db.execute('SELECT count(*) FROM clothing_classifications WHERE user_id=? AND created>?', (uid, cutoff)).fetchone()[0]
+            total = db.execute('SELECT count(*) FROM clothing_classifications WHERE created>?', (cutoff,)).fetchone()[0]
+            if used >= 30 or total >= 150:
+                raise Problem(429, 'Распознавание пока недоступно. Выберите тип вручную.')
+            cid = secrets.token_hex(16)
+            db.execute('INSERT INTO clothing_classifications (id,user_id,fingerprint,created) VALUES (?,?,?,?)', (cid, uid, fingerprint, time.time()))
+        # Reserve before calling the provider; uncertain failures are never retried.
+        try:
+            category, usage = classifier(image, CATEGORIES)
+        except GenerationError as error:
+            category, usage = 'Вещь', error.usage
+        except Exception:
+            category, usage = 'Вещь', None
+        if category not in CATEGORIES:
+            category = 'Вещь'
+        with self.db() as db:
+            db.execute('UPDATE clothing_classifications SET category=?,usage=? WHERE id=?', (category, json.dumps(usage), cid))
+        return {'category': category}
 
     def get(self, sid, jid):
         with self.db() as db:
@@ -345,7 +419,7 @@ class Store:
         with self.db() as db:
             total = db.execute('SELECT COUNT(*) FROM generation_archive a'+where, params).fetchone()[0]
             rows = db.execute("""SELECT a.id,a.user_id,i.label,a.status,a.created,a.elapsed,
-              a.wait_elapsed,a.product_url,a.error,a.feedback,a.model,a.prompt,
+              a.wait_elapsed,a.product_url,a.error,a.feedback,a.model,a.prompt,a.garments,
               CASE WHEN a.person IS NOT NULL THEN 1 ELSE 0 END AS has_person,
               CASE WHEN a.garment IS NOT NULL THEN 1 ELSE 0 END AS has_garment,
               CASE WHEN a.result IS NOT NULL THEN 1 ELSE 0 END AS has_result
@@ -354,6 +428,8 @@ class Store:
         jobs = [dict(r) for r in rows]
         for job in jobs:
             job['label'] = job['label'] or 'Участник ' + job['user_id'][:8]
+            packed = json.loads(job.pop('garments') or '[]')
+            job['garments'] = [{'category': item['category'], 'index': i} for i, item in enumerate(packed)]
         return {'jobs': jobs, 'total': total, 'offset': offset, 'limit': 20}
 
     def cleanup(self):
@@ -385,7 +461,8 @@ class Store:
                 continue
             start = time.monotonic()
             try:
-                result, usage = self.provider(row["person"], row["garment"])
+                images = [base64.b64decode(item['image']) for item in self.items(row)]
+                result, usage = self.provider(row["person"], images if len(images) > 1 else images[0])
                 result = normalize(result)
                 values = ("success", result, None, json.dumps(usage), time.monotonic()-start, row["id"])
             except GenerationError as error:
@@ -542,6 +619,16 @@ class Handler(BaseHTTPRequestHandler):
             if status and status not in ('success', 'error', 'queued', 'running'):
                 raise Problem(400, 'Неверный статус.')
             return self.respond(200, store.archive(user_id, offset, status))
+        item_match = re.fullmatch(r'/api/admin/generations/([a-f0-9]{32})/garments/([0-5])', path)
+        if self.command == 'GET' and item_match:
+            jid, index = item_match.groups()
+            with store.db() as db:
+                row = db.execute('SELECT garment,garments FROM generation_archive WHERE id=?', (jid,)).fetchone()
+            if row:
+                items = store.items(row)
+                if int(index) < len(items):
+                    return self.respond(200, base64.b64decode(items[int(index)]['image']), 'image/jpeg')
+            raise Problem(404, 'Вещь недоступна.')
         photo = re.fullmatch(r'/api/admin/generations/([a-f0-9]{32})/(person|garment|result)', path)
         if self.command == 'GET' and photo:
             jid, part = photo.groups()
@@ -612,6 +699,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(200, self.server.store.unlock(sid, body.get("code")))
                 if path == "/api/jobs":
                     return self.respond(202, self.server.store.create(sid, body))
+                if path == '/api/classify':
+                    return self.respond(200, self.server.store.classify(sid, body))
+            item_match = re.fullmatch(r'/api/jobs/([a-f0-9]{32})/garments/([0-5])', path)
+            if self.command == 'GET' and item_match:
+                jid, index = item_match.groups()
+                row = self.server.store.get(sid, jid)
+                items = self.server.store.items(row)
+                if int(index) < len(items):
+                    return self.respond(200, base64.b64decode(items[int(index)]['image']), 'image/jpeg')
+                raise Problem(404, 'Вещь недоступна.')
             match = re.fullmatch(r"/api/jobs/([a-f0-9]{32})(?:/(person|garment|result|feedback))?", path)
             if match:
                 jid, part = match.groups()

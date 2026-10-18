@@ -8,41 +8,42 @@
 </head>
 <body>
 <div class="app-shell">
-  <header class="header"><a class="brand" href="./" aria-label="fitme — на главную">fitme</a><span class="header-note">ваша примерочная</span></header>
+  <header class="header"><a class="brand" href="./" aria-label="fitme — на главную">fitme</a><span class="header-note">ваша примерочная</span><span class="live-dot" aria-label="Закрытый тест">BETA</span></header>
   <main>
     <div class="workspace">
       <section class="mirror" aria-label="Ваша примерочная">
-        <div class="mirror-top"><span class="section-label">PREVIEW</span><span id="mirror-badge" class="pill">01 / Ваше фото</span></div>
+        <div class="mirror-top"><span id="mirror-badge" class="pill">Ваше фото</span><div class="mirror-tools"><button id="change-person" class="glass-button" type="button" hidden>↻ Фото</button><button id="add-products" class="glass-button add-products" type="button" hidden>Добавить ＋</button></div></div>
         <div class="mirror-stage" id="mirror-stage">
           <div class="empty-person" id="empty-person">
             <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
             <svg class="figure" viewBox="0 0 300 430" fill="none" aria-hidden="true"><ellipse cx="150" cy="406" rx="83" ry="9" fill="#d6d6c9" opacity=".4"/><path d="M117 151 108 111c-7-31 5-67 40-68 35-1 48 29 42 61l-12 45" fill="#637563"/><path d="M135 120h29l5 32 19 12-38 35-40-34 19-12z" fill="#d3bea2"/><ellipse cx="150" cy="93" rx="28" ry="38" fill="#ddcdb5"/><path d="M120 86c0-29 18-41 36-32 12 5 25 22 26 40-14-5-29-12-39-25-4 8-13 13-23 17" fill="#637563"/><path d="m108 151 25-10c7 16 27 18 38 0l25 11 24 83-32 10-9-36 3 62h-66l3-62-11 36-31-10z" fill="#f2efe3" stroke="#c9cdbb" stroke-width="1.5"/><path d="m79 235 27 7-15 60c-2 14-20 10-17-3zm111 7 27-8 5 64c2 13-15 16-18 4z" fill="#ddcdb5"/><path d="M116 271h66l6 122h-30l-10-82-10 82h-31z" fill="#7d8972"/><path d="m107 389-9 15c-2 4 1 6 7 6h33v-21m20 0v21h36c5 0 7-3 3-7l-10-14" fill="#475d4b"/><path d="M119 253c20 7 43 8 62-1M128 173l-8 35m59-35 8 34" stroke="#c9cdbb" stroke-width="1.5"/></svg>
-            <div class="empty-caption"><strong>Новый образ начинается с вас</strong><span>Загрузите фото, чтобы примерить вещь</span></div>
+            <div class="empty-caption"><strong>Новый образ начинается с вас</strong><span>Выберите фото. Соберите образ. Примерьте.</span></div>
           </div>
           <img id="main-photo" class="main-photo" alt="Ваше фото в примерочной" hidden>
-          <div id="processing" class="processing" hidden><div class="spinner"></div><strong>Собираем ваш новый образ</strong><p>Сохраняем вас. Примеряем вещь.<br>Можно оставить эту страницу открытой.</p><span id="elapsed">Обычно нужно немного подождать</span></div>
+          <div id="processing" class="processing" hidden><div class="spinner"></div><strong>Собираем ваш новый образ</strong><p>Сохраняем вас. Соединяем вещи в образ.<br>Можно оставить эту страницу открытой.</p><span id="elapsed">Обычно нужно немного подождать</span></div>
           <div class="comparison" id="comparison" hidden><button data-view="before">До</button><button data-view="after" class="selected">После</button></div>
         </div>
       </section>
       <aside class="controls">
         <nav class="steps" aria-label="Этапы примерки"><button id="step-person" class="active"><span>1</span> Ваше фото</button><i></i><button id="step-garment"><span>2</span> Вещь</button><i></i><button id="step-result" disabled><span>3</span> Результат</button></nav>
         <section id="person-panel" class="panel">
-          <div id="invite-banner" hidden><button id="invite-open" class="invite-button">Ввести код приглашения <span>→</span></button></div><div class="panel-heading"><h1>Сначала — ваше фото</h1><span class="step-count">01 / 03</span></div><p class="description">Лицо и верх тела в кадре. Руки не закрывают одежду.</p>
+          <div id="invite-banner" hidden><button id="invite-open" class="invite-button">Ввести код приглашения <span>→</span></button></div><div class="panel-heading"><h1>Сначала — ваше фото</h1><span class="step-count">01 / 03</span></div><p class="description">Для полного образа выберите фото в полный рост. Руки не закрывают одежду.</p>
           <label class="upload-zone" id="person-zone"><input id="person-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif"><span class="upload-icon"><svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><rect x="4" y="5" width="20" height="19" rx="5" stroke="currentColor" stroke-width="1.5"/><path d="m7 20 5-6 4 4 3-3 5 6M14 2v8m-4-4 4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span><strong id="person-upload-label">Выбрать своё фото</strong><small>JPG, PNG, WebP · до 15 МБ</small></label>
           <button id="person-crop-open" class="text-button" hidden>Кадрировать своё фото ↗</button>
-          <button id="to-garment" class="primary" disabled>Выбрать вещь <span>→</span></button>
+          <button id="to-garment" class="primary" disabled>Собрать образ <span>→</span></button>
         </section>
         <section id="garment-panel" class="panel" hidden>
-          <div class="panel-heading"><h2>Что примерим?</h2><span class="step-count">02 / 03</span></div><p class="description">Добавьте фото или скриншот одной вещи.</p>
-          <label class="upload-zone garment-zone" id="garment-zone"><input id="garment-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif"><span class="upload-icon"><svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="m10 5-7 4 4 7 3-2v10h12V14l3 2 4-7-7-4c-1 5-11 5-12 0z" transform="translate(-2 0)" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></span><strong id="garment-upload-label">Добавить фото вещи</strong><small>Футболка или простой верх · вид спереди</small></label>
-          <div class="garment-preview" id="garment-preview" hidden><img id="garment-thumb" alt="Выбранная вещь"><div><strong>Ваша находка</strong><span>Верх · одна вещь</span><button id="crop-open" class="text-button">Обрезать фото ↗</button></div><button id="garment-replace" class="icon-button" aria-label="Заменить фото вещи">↻</button></div>
+          <div class="panel-heading"><h2>Соберите свой образ</h2><span id="garment-count" class="step-count">0 / 6</span></div>
+          <div id="garment-list" class="garment-list" aria-label="Вещи в образе"></div>
+          <label class="upload-zone garment-zone" id="garment-zone"><input id="garment-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif"><span class="upload-icon">＋</span><strong id="garment-upload-label">Добавить вещи</strong><small>Одежда, обувь и аксессуары · до 6 фото</small></label>
+          <p id="recognition-note" class="micro recognition-note" role="status">Тип можно выбрать вручную</p>
           <button id="link-open" class="back-link">＋ Ссылка на вещь <span>необязательно</span></button>
-          <button id="generate" class="primary" disabled>Примерить на себя <span>✳</span></button><p id="generation-note" class="micro"></p>
+          <button id="garment-invite" class="invite-button" hidden>Ввести приглашение →</button><button id="generate" class="primary" disabled>Примерить образ <span>✳</span></button><p id="generation-note" class="micro"></p>
 
         </section>
         <section id="result-panel" class="panel" hidden>
           <div class="eyebrow" id="result-eyebrow">ВАШ НОВЫЙ ОБРАЗ</div><h2 id="result-title">Уже примеряем</h2><p id="result-description" class="description">Фото отправлены. Результат появится здесь автоматически.</p>
-          <div id="result-actions" hidden><a class="primary" id="download" download="fitme-try-on.jpg">Сохранить фото <span>↓</span></a><a id="shop-link" class="secondary" target="_blank" rel="noopener noreferrer" hidden>Вернуться к вещи ↗</a><button id="feedback-open" class="secondary">Оценить примерку ♡</button><button id="another" class="secondary">Примерить другую вещь ↗</button><p class="micro">Визуализация образа, без гарантии размера и посадки.</p></div>
+          <div id="result-actions" hidden><a class="primary" id="download" download="fitme-try-on.jpg">Сохранить фото <span>↓</span></a><a id="shop-link" class="secondary" target="_blank" rel="noopener noreferrer" hidden>Вернуться к вещи ↗</a><button id="feedback-open" class="secondary">Оценить примерку ♡</button><button id="another" class="secondary">Новый образ ↗</button><p class="micro">Визуализация образа, без гарантии размера и посадки.</p></div>
           <div id="error-actions" hidden><button id="retry-edit" class="primary">Вернуться к фотографиям <span>↗</span></button><p class="micro">Новый запуск — отдельная попытка. Автоматических повторов нет.</p></div>
           <div class="waiting-card" id="waiting-card"><span>✳</span><p>Можно обновить страницу.<br>Ваша примерка продолжится.</p></div>
         </section>
@@ -53,8 +54,9 @@
   <nav class="app-nav" aria-label="Разделы"><button id="fitting-open" class="selected"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m3 10 9-7 9 7v10H3z"/><path d="M9 20v-7h6v7"/></svg><span>Примерочная</span></button><button id="history-open"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="6" width="14" height="15" rx="3"/><path d="M8 3h8m-7 9 3-3 3 3m-3-3v8"/></svg><span>Мои образы</span><span id="history-count" class="history-count" hidden></span></button></nav>
 </div>
 <dialog id="invite-dialog"><div class="dialog-heading"><h2>Вы в списке?</h2><button id="invite-close" class="icon-button" aria-label="Закрыть приглашение">×</button></div><p>fitme пока тестируют друзья. Введите свой код приглашения.</p><form id="invite-form"><label for="invite-code">Код приглашения</label><input id="invite-code" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" minlength="16" maxlength="128" required><button id="invite-submit" class="primary" type="submit">Войти в примерочную</button><p id="invite-note" role="status"></p></form></dialog>
-<dialog id="history-dialog"><div class="dialog-heading"><h2>Мои образы</h2><button id="history-close" class="icon-button" aria-label="Закрыть историю">×</button></div><p id="history-empty">Здесь появятся ваши примерки. Они хранятся 24 часа.</p>    <section class="recent" id="recent-section" hidden><div class="recent-heading"><h3>Последние примерки</h3><span>24 часа</span></div><div id="recent-list" class="recent-list"></div></section>
+<dialog id="history-dialog" class="history-page"><div class="dialog-heading"><div><div class="eyebrow">ВАША КОЛЛЕКЦИЯ</div><h2>Мои образы<span class="accent-dot">.</span></h2></div><button id="history-close" class="icon-button" aria-label="Закрыть историю">×</button></div><p id="history-empty">Ваш стиль, в одном месте.<br>Соберите первый образ в примерочной — он появится здесь на 24 часа.</p>    <section class="recent" id="recent-section" hidden><div class="recent-heading"><h3>Собрано вами</h3><span>24 часа</span></div><div id="recent-list" class="recent-list"></div></section>
 </dialog>
+<dialog id="item-dialog" aria-labelledby="item-title"><div class="dialog-heading"><h2 id="item-title">Вещь в образе</h2><button id="item-close" class="icon-button" aria-label="Закрыть вещь">×</button></div><img id="item-photo" class="item-photo" alt="Фото выбранной вещи"><label for="item-category" class="field-label">Тип вещи</label><select id="item-category"></select><p id="item-recognition" class="micro" role="status"></p><button id="item-crop" class="secondary">Обрезать фото ↗</button><button id="item-remove" class="danger-button">Убрать из образа</button></dialog>
 <dialog id="link-dialog"><div class="dialog-heading"><h2>Ссылка на вещь</h2><button id="link-close" class="icon-button" aria-label="Закрыть ссылку">×</button></div>          <label for="product-url" class="sr-only">Ссылка на товар</label><input id="product-url" type="url" placeholder="https://…" maxlength="2048"><p>Сохраним, чтобы вы могли вернуться к покупке.</p>
 <button id="link-save" class="primary">Готово</button></dialog>
 <dialog id="feedback-dialog"><div class="dialog-heading"><h2>Как вам образ?</h2><button id="feedback-close" class="icon-button" aria-label="Закрыть оценку">×</button></div><div class="feedback"><strong>Как вам примерка?</strong><div><button data-rating="helpful">♡ Нравится</button><button data-rating="person">Не похож(а) на себя</button><button data-rating="garment">Вещь отличается</button><button data-rating="unhelpful">Не помогло</button></div><span id="feedback-note" aria-live="polite"></span></div></dialog>

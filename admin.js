@@ -95,9 +95,10 @@ async function refreshArchive() {
     const card=element('article',undefined,'generation'), heading=element('div',undefined,'generation-heading'), title=element('div');
     title.append(element('strong',job.label),element('p',date(job.created)));heading.append(title,element('span',statuses[job.status]||job.status,'status '+job.status));card.append(heading);
     const photos=element('div',undefined,'photos');
-    for(const [part,label] of [['person','Человек'],['garment','Товар'],['result','Результат']]){
+    const parts = [['person','Человек'], ...(job.garments?.length ? job.garments.map(item=>['garments/'+item.index,item.category]) : [['garment','Товар']]), ['result','Результат']];
+    for(const [part,label] of parts){
       const figure=element('figure');figure.append(element('figcaption',label));
-      if(job['has_'+part]) {
+      if(part.startsWith('garments/') || job['has_'+part]) {
         const url=`/api/admin/generations/${job.id}/${part}`, button=element('button',undefined,'photo-button'), img=element('img');
         button.type='button';button.setAttribute('aria-label',`Открыть фото: ${label}`);img.src=url;img.alt=label;img.loading='lazy';button.append(img);
         button.onclick=()=>{$('full-photo').src=url;$('full-photo').alt=label;$('photo-title').textContent=`${job.label} · ${label}`;$('photo-download').href=url+'?download=1';$('photo-dialog').showModal();};figure.append(button);
@@ -124,3 +125,4 @@ $('photo-close').onclick=()=>{$('photo-dialog').close();};
 $('photo-dialog').addEventListener('close',()=>{$('full-photo').removeAttribute('src');$('photo-download').removeAttribute('href');});
 
 (async()=>{try{if(ownerKey){const key=ownerKey;ownerKey=null;await login(key);}else await refresh();}catch(e){if(e.message!=='Войдите с ключом владельца.')notice(e.message);}})();
+

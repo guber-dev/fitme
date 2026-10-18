@@ -6,7 +6,10 @@ const $ = id => document.getElementById(id);
 const apiBase = document.querySelector('meta[name="fitme-api"]')?.content || '';
 const previewOnly = apiBase === 'preview';
 const apiUrl = path => `${previewOnly ? '' : apiBase}${path}`;
-const state = { person: null, garment: null, current: null, jobs: [], config: {}, step: 'person', busy: false, requestId: null, poll: null, crop: null };
+const state = { person: null, garments: [], current: null, jobs: [], config: {}, step: 'person', busy: false, requestId: null, poll: null, crop: null, editingItem: null, uploads: [], importing: false };
+const categories = ['Вещь','Футболка','Рубашка','Свитер','Худи','Куртка','Пальто','Джинсы','Брюки','Шорты','Юбка','Платье','Костюм','Кроссовки','Обувь','Кепка','Головной убор','Сумка','Очки','Аксессуар'];
+const maxGarments = 6;
+const newId = () => crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
 let draftDb;
 let draftExpires = 0;
 const retention = 24 * 3600 * 1000;
@@ -46,25 +49,34 @@ async function draft(action, value) {
 }
 async function saveDraft() {
   draftExpires = Date.now() + retention;
-  try { await draft('put', { person: state.person, garment: state.garment, requestId: state.requestId, productUrl: $('product-url').value, created: draftExpires-retention }); }
+  try { await draft('put', { person: state.person, garments: state.garments.map(({id,image,category}) => ({id,image,category})), requestId: state.requestId, productUrl: $('product-url').value, created: draftExpires-retention }); }
   catch { /* Browser storage can be unavailable in private mode; keep this tab usable. */ }
 }
 function buttons() {
   $('to-garment').disabled = !state.person || state.busy;
-  $('generate').disabled = !state.person || !state.garment || state.busy || !state.config.generation_enabled || (state.config.invite_required && !state.config.invited) || state.config.remaining === 0;
+  $('generate').disabled = !state.person || !state.garments.length || state.busy || state.importing || !state.config.generation_enabled || (state.config.invite_required && !state.config.invited) || state.config.remaining === 0;
+  $('garment-input').disabled = state.busy || state.importing || state.garments.length >= maxGarments;
+  $('change-person').disabled = state.busy || state.importing;
+  $('person-input').disabled = state.busy || state.importing;
+  $('add-products').hidden = state.step !== 'garment';
+  $('add-products').disabled = state.busy || state.importing || state.garments.length >= maxGarments;
+  $('recognition-note').textContent = state.config.classification_enabled && (!state.config.invite_required || state.config.invited) ? 'Определим тип вещи автоматически. Нажмите на неё, чтобы изменить подпись.' : 'Нажмите на вещь, чтобы выбрать тип или обрезать фото.';
   $('step-result').disabled = !state.current;
   $('invite-banner').hidden = !state.config.invite_required || state.config.invited;
+  $('garment-invite').hidden = !state.config.invite_required || state.config.invited;
   $('generation-note').textContent = state.config.invite_required && !state.config.invited ? 'Введите приглашение на первом шаге.' : !state.config.generation_enabled ? 'Примерки пока выключены. Можно загрузить и обрезать фото.' : state.config.remaining === 0 ? 'Тестовые попытки закончились.' : `Осталось попыток: ${state.config.remaining}. Одна кнопка — одна примерка.`;
 }
 function showStep(step) {
   if (state.busy && step !== 'result') return;
   state.step = step;
+  document.querySelector('.app-shell').dataset.step = step;
   for (const name of ['person', 'garment', 'result']) {
     $(`${name}-panel`).hidden = name !== step;
     $(`step-${name}`).classList.toggle('active', name === step);
     $(`step-${name}`).setAttribute('aria-current', name === step ? 'step' : 'false');
   }
-  $('mirror-badge').textContent = { person: '01 / Ваше фото', garment: '02 / Ваша вещь', result: '03 / Ваш образ' }[step];
+  $('mirror-badge').textContent = { person: 'Ваше фото', garment: 'Ваш новый образ', result: 'Ваш образ' }[step];
+  $('change-person').hidden = !state.person || step === 'result';
   $('comparison').hidden = step !== 'result' || state.current?.status !== 'success';
   if (step !== 'result') setPhoto(state.person);
   buttons(); message();
@@ -73,18 +85,104 @@ function setPhoto(src) {
   $('main-photo').hidden = !src;
   $('empty-person').hidden = !!src;
   $('mirror-stage').classList.toggle('has-photo', !!src);
-  if (src) $('main-photo').src = src;
-  else $('main-photo').removeAttribute('src');
+  $('main-photo').alt = 'Ваше фото в примерочной';
+  if (src && $('main-photo').getAttribute('src') !== src) {
+    $('main-photo').onload = () => {
+      if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        $('main-photo').animate([{opacity:.35, transform:'scale(1.012)'}, {opacity:1, transform:'scale(1)'}], {duration:320, easing:'ease-out'});
+      }
+    };
+    $('main-photo').src = src;
+  }
+  else if (!src) $('main-photo').removeAttribute('src');
 }
 function refreshUploads() {
   $('person-crop-open').hidden = !state.person;
   $('person-upload-label').textContent = state.person ? 'Заменить своё фото' : 'Выбрать своё фото';
-  $('garment-zone').hidden = !!state.garment;
-  $('garment-preview').hidden = !state.garment;
-  if (state.garment) $('garment-thumb').src = state.garment;
-  else $('garment-thumb').removeAttribute('src');
+  document.querySelector('.app-shell').classList.toggle('has-person', !!state.person);
+  renderGarments();
   if (state.step !== 'result') setPhoto(state.person);
   buttons();
+}
+function renderGarments() {
+  $('garment-list').replaceChildren();
+  $('garment-count').textContent = `${state.garments.length} / ${maxGarments}`;
+  $('garment-zone').classList.toggle('compact', state.garments.length > 0);
+  $('garment-zone').hidden = state.garments.length >= maxGarments;
+  for (const item of state.garments) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'garment-tile'; button.disabled = state.busy;
+    button.setAttribute('aria-label', `${item.category}: изменить или удалить`);
+    const image = new Image(); image.src = item.image; image.alt = item.category;
+    const label = document.createElement('span'); label.textContent = item.recognizing ? 'Определяем…' : item.category;
+    button.classList.toggle('recognizing', !!item.recognizing); button.append(image, label);
+    button.onclick = () => openItem(item.id);
+    $('garment-list').append(button);
+  }
+  if (state.garments.length && state.garments.length < maxGarments) {
+    const add = document.createElement('button'); add.type = 'button'; add.className = 'add-tile';
+    add.disabled = state.busy || state.importing; add.setAttribute('aria-label', 'Добавить вещи');
+    const plus = document.createElement('strong'); plus.textContent = '+';
+    const label = document.createElement('span'); label.textContent = 'Добавить'; add.append(plus, label);
+    add.onclick = () => $('garment-input').click(); $('garment-list').append(add);
+  }
+}
+async function recognize(item) {
+  if (!state.config.classification_enabled || (state.config.invite_required && !state.config.invited)) return;
+  const source = item.image, requestId = state.requestId; const revision = item.revision = (item.revision || 0) + 1;
+  item.recognizing = true; renderGarments();
+  try {
+    const result = await api('/api/classify', {method:'POST', body:JSON.stringify({image:source})});
+    if (state.garments.includes(item) && item.image === source && item.revision === revision && state.requestId === requestId && categories.includes(result.category)) {
+      item.category = result.category; state.requestId = null;
+    }
+  } catch { /* Manual labels keep the fitting usable when recognition is unavailable. */ }
+  finally {
+    if (item.revision === revision) item.recognizing = false;
+    renderGarments();
+    if (state.editingItem === item.id && $('item-dialog').open) updateItemDialog(item);
+    await saveDraft();
+  }
+}
+function updateItemDialog(item) {
+  $('item-photo').src = item.image; $('item-category').value = item.category;
+  $('item-recognition').textContent = item.recognizing ? 'Определяем тип… Можно выбрать вручную.' : item.category === 'Вещь' ? 'Выберите тип вещи, если он не определился.' : 'Подпись можно изменить.';
+}
+function openItem(id) {
+  if (state.busy || state.importing) return;
+  const item = state.garments.find(item => item.id === id); if (!item) return;
+  state.editingItem = id; updateItemDialog(item); $('item-dialog').showModal();
+}
+for (const category of categories) {
+  const option = document.createElement('option'); option.value = option.textContent = category; $('item-category').append(option);
+}
+$('item-close').onclick = () => $('item-dialog').close();
+$('item-category').onchange = async () => {
+  const item = state.garments.find(item => item.id === state.editingItem); if (!item || state.busy) return;
+  item.revision = (item.revision || 0) + 1; item.recognizing = false; item.category = $('item-category').value;
+  state.requestId = null; renderGarments(); updateItemDialog(item); await saveDraft();
+};
+$('item-remove').onclick = async () => {
+  if (state.busy) return;
+  state.garments = state.garments.filter(item => item.id !== state.editingItem);
+  state.requestId = null; $('item-dialog').close(); refreshUploads(); await saveDraft();
+};
+$('item-crop').onclick = () => {
+  const item = state.garments.find(item => item.id === state.editingItem); if (!item) return;
+  $('item-dialog').close(); openCrop('garment', item.image, item.id);
+};
+async function selectFiles(kind, files) {
+  if (state.busy || state.importing || $('crop-dialog').open) return;
+  if (kind === 'person') return selectFile(kind, files[0]);
+  const available = maxGarments - state.garments.length;
+  if (files.length > available) { message(`Можно добавить ещё ${available} фото. Выберите до ${maxGarments} вещей на образ.`); return; }
+  state.uploads = Array.from(files); await nextUpload();
+}
+async function nextUpload() {
+  const file = state.uploads.shift();
+  state.importing = !!file;
+  buttons(); renderGarments();
+  if (file) await selectFile('garment', file);
 }
 async function loadImage(src) {
   const img = new Image();
@@ -117,20 +215,22 @@ async function selectFile(kind, file) {
     const data = await prepareFile(file);
     if (!data) return;
     await openCrop(kind, data);
-  } catch (error) { message(error.message); }
+  } catch (error) { message(error.message); state.uploads = []; state.importing = false; buttons(); renderGarments(); }
 }
 for (const kind of ['person', 'garment']) {
-  $(`${kind}-input`).addEventListener('change', e => { selectFile(kind, e.target.files[0]); e.target.value = ''; });
+  $(`${kind}-input`).addEventListener('change', e => { selectFiles(kind, Array.from(e.target.files)); e.target.value = ''; });
   const zone = $(`${kind}-zone`);
   for (const event of ['dragenter', 'dragover']) zone.addEventListener(event, e => { e.preventDefault(); zone.classList.add('dragover'); });
   for (const event of ['dragleave', 'drop']) zone.addEventListener(event, e => { e.preventDefault(); zone.classList.remove('dragover'); });
-  zone.addEventListener('drop', e => selectFile(kind, e.dataTransfer.files[0]));
+  zone.addEventListener('drop', e => selectFiles(kind, Array.from(e.dataTransfer.files)));
 }
 $('to-garment').onclick = () => showStep('garment');
 $('step-person').onclick = () => showStep('person');
 $('step-garment').onclick = () => state.person ? showStep('garment') : message('Сначала добавьте своё фото.');
 $('step-result').onclick = () => state.current && renderJob(state.current);
-$('garment-replace').onclick = () => $('garment-input').click();
+$('garment-invite').onclick = () => $('invite-dialog').showModal();
+$('change-person').onclick = () => $('person-input').click();
+$('add-products').onclick = () => $('garment-input').click();
 $('product-url').oninput = () => { state.requestId = null; saveDraft(); };
 
 async function session() {
@@ -145,18 +245,32 @@ function renderRecent() {
   $('history-count').textContent = state.jobs.length;
   $('recent-list').replaceChildren();
   for (const job of state.jobs) {
-    const button = document.createElement('button');
+    const card = document.createElement('article'); card.className = 'outfit-card';
+    const heading = document.createElement('div'); heading.className = 'outfit-heading';
+    const title = document.createElement('strong'); title.textContent = 'Образ ' + new Date(job.created * 1000).toLocaleDateString('ru-RU', {day:'numeric',month:'short'});
+    const count = document.createElement('span'); const n = job.garments?.length || 1; count.textContent = `${n} вещ${n === 1 ? 'ь' : n > 4 ? 'ей' : 'и'}`;
+    heading.append(title, count); card.append(heading);
+    const layout = document.createElement('div'); layout.className = 'outfit-layout';
+    const button = document.createElement('button'); button.className = 'outfit-photo';
     button.setAttribute('aria-label', job.status === 'success' ? 'Открыть прошлую примерку' : 'Открыть состояние примерки');
     button.classList.toggle('selected', job.id === state.current?.id);
-    if (job.status === 'success') { const image = new Image(); image.src = apiUrl(`/api/jobs/${job.id}/result`); image.alt = 'Предыдущая примерка'; button.append(image); }
+    if (job.status === 'success') { const image = new Image(); image.loading = 'lazy'; image.src = apiUrl(`/api/jobs/${job.id}/result`); image.alt = 'Предыдущая примерка'; button.append(image); }
     else { const label = document.createElement('span'); label.textContent = job.status === 'error' ? 'Не получилась' : 'Создаётся…'; button.append(label); }
     button.onclick = () => { if (state.busy && job.id !== state.current?.id) return; renderJob(job); $('history-dialog').close(); if (['queued', 'running'].includes(job.status)) pollJob(job.id); };
-    $('recent-list').append(button);
+    const items = document.createElement('div'); items.className = 'outfit-items';
+    for (const item of job.garments || [{category:'Вещь',index:0}]) {
+      const tile = document.createElement('div'); tile.className = 'outfit-item';
+      const image = new Image(); image.loading = 'lazy'; image.src = apiUrl(`/api/jobs/${job.id}/garments/${item.index}`); image.alt = item.category;
+      const label = document.createElement('span'); label.textContent = item.category; tile.append(image, label); items.append(tile);
+    }
+    layout.append(button, items); card.append(layout);
+    const hint = document.createElement('span'); hint.className = 'outfit-hint'; hint.textContent = job.status === 'success' ? 'Нажмите на фото · до / после' : job.status === 'error' ? 'Нажмите на фото, чтобы изменить образ' : 'Собираем ваш образ'; card.append(hint);
+    $('recent-list').append(card);
   }
 }
 function renderJob(job) {
   state.current = job; state.busy = ['queued', 'running'].includes(job.status);
-  showStep('result');
+  renderGarments(); showStep('result');
   $('processing').hidden = !state.busy;
   $('waiting-card').hidden = !state.busy;
   $('result-actions').hidden = job.status !== 'success';
@@ -206,13 +320,13 @@ $('generate').onclick = async () => {
   state.requestId ||= crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
   await saveDraft();
   try {
-    const job = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ person: state.person, garment: state.garment, product_url: link, request_id: state.requestId }) });
+    const job = await api('/api/jobs', { method: 'POST', body: JSON.stringify({ person: state.person, garments: state.garments.map(({image,category}) => ({image,category})), product_url: link, request_id: state.requestId }) });
     state.current = job;
     await session(); renderJob(job); pollJob(job.id);
   } catch (error) {
     state.busy = false; buttons();
     message(error.message || 'Связь прервалась. Повторное нажатие проверит тот же запрос.');
-  } finally { $('generate').replaceChildren(document.createTextNode('Примерить на себя ')); const star = document.createElement('span'); star.textContent = '✳'; $('generate').append(star); }
+  } finally { $('generate').replaceChildren(document.createTextNode('Примерить образ ')); const star = document.createElement('span'); star.textContent = '✳'; $('generate').append(star); }
 };
 document.querySelectorAll('[data-view]').forEach(button => button.onclick = () => {
   if (!state.current) return;
@@ -230,11 +344,28 @@ document.querySelectorAll('[data-rating]').forEach(button => button.onclick = as
 });
 async function backToPhotos(clearGarment) {
   clearTimeout(state.poll);
-  if (!state.person && state.current) {
-    try { const res = await fetch(apiUrl(`/api/jobs/${state.current.id}/person`), { credentials: 'include' }); if (!res.ok) throw new Error(); const blob = await res.blob(); state.person = await prepareFile(blob); }
-    catch { message('Исходное фото уже недоступно. Добавьте его заново.'); }
+  if (state.busy) return;
+  if (state.current) {
+    try {
+      const job = state.current;
+      const restore = async path => {
+        const response = await fetch(apiUrl(path), {credentials:'include'});
+        if (!response.ok) throw new Error();
+        return prepareFile(await response.blob());
+      };
+      const [person, garments] = await Promise.all([
+        restore(`/api/jobs/${job.id}/person`),
+        clearGarment ? Promise.resolve([]) : Promise.all((job.garments || [{index:0,category:'Вещь'}]).map(async item => ({
+          id:newId(), category:item.category, image:await restore(`/api/jobs/${job.id}/garments/${item.index}`)
+        })))
+      ]);
+      state.person = person; state.garments = garments;
+      $('product-url').value = clearGarment ? '' : job.product_url || '';
+    } catch {
+      message('Не удалось загрузить фотографии образа. Попробуйте ещё раз.'); return;
+    }
   }
-  if (clearGarment) { state.garment = null; $('product-url').value = ''; }
+  if (clearGarment) { state.garments = []; $('product-url').value = ''; }
   state.requestId = null; state.busy = false;
   $('processing').hidden = true;
   refreshUploads(); showStep(state.person ? 'garment' : 'person'); await saveDraft(); await session();
@@ -242,8 +373,8 @@ async function backToPhotos(clearGarment) {
 $('another').onclick = () => backToPhotos(true);
 $('retry-edit').onclick = () => backToPhotos(false);
 
-// Cropping is local; no file leaves the device until the user starts generation.
-async function openCrop(kind, source = state[kind]) {
+// Cropping is local. Product recognition runs only after the crop is accepted.
+async function openCrop(kind, source = state[kind], itemId = null) {
   if (state.busy || !source || $('crop-dialog').open) return;
   try {
     const img = await loadImage(source);
@@ -253,14 +384,13 @@ async function openCrop(kind, source = state[kind]) {
     // Explicit CSS dimensions preserve the image ratio even in a short viewport.
     canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
     canvas.style.width = `min(100%, ${canvas.width}px, calc(42dvh * ${canvas.width / canvas.height}))`;
-    state.crop = { kind, img, source, rect: [0, 0, canvas.width, canvas.height], start: null };
+    state.crop = { kind, img, source, itemId, rect: [0, 0, canvas.width, canvas.height], start: null };
     $('crop-title').textContent = kind === 'person' ? 'Ваше фото' : 'Фото вещи';
-    $('crop-help').textContent = kind === 'person' ? 'Оставьте лицо и верх тела в кадре. Выделите область пальцем или мышью либо используйте всё фото.' : 'Оставьте одну вещь без лишних деталей. Выделите область пальцем или мышью либо используйте всё фото.';
+    $('crop-help').textContent = kind === 'person' ? 'Для полного образа оставьте человека в полный рост. Выделите область пальцем или мышью либо используйте всё фото.' : 'Оставьте одну вещь без лишних деталей. Выделите область пальцем или мышью либо используйте всё фото.';
     $('crop-error').hidden = true;
     drawCrop(); $('crop-dialog').showModal();
-  } catch { message('Не удалось открыть фото для кадрирования.'); }
+  } catch { message('Не удалось открыть фото для кадрирования.'); state.uploads = []; state.importing = false; buttons(); renderGarments(); }
 }
-$('crop-open').onclick = () => openCrop('garment');
 $('person-crop-open').onclick = () => openCrop('person');
 function drawCrop() {
   const canvas = $('crop-canvas'), ctx = canvas.getContext('2d'), c = state.crop;
@@ -305,7 +435,7 @@ $('crop-canvas').onkeydown = event => {
 };
 $('crop-reset').onclick = () => { state.crop.rect = [0,0,$('crop-canvas').width,$('crop-canvas').height]; drawCrop(); };
 $('crop-close').onclick = () => $('crop-dialog').close();
-$('crop-dialog').addEventListener('close', () => { state.crop = null; const canvas = $('crop-canvas'); canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height); });
+$('crop-dialog').addEventListener('close', () => { state.crop = null; const canvas = $('crop-canvas'); canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height); if (state.importing) nextUpload(); });
 $('crop-apply').onclick = async () => {
   const c = state.crop;
   if (!c || state.busy) return;
@@ -317,12 +447,21 @@ $('crop-apply').onclick = async () => {
   if (w < 128 || h < 128) { $('crop-error').textContent = 'Слишком маленький кадр. Выделите область побольше (минимум 128 × 128).'; $('crop-error').hidden = false; return; }
   const output = document.createElement('canvas'); output.width = w; output.height = h;
   output.getContext('2d').drawImage(c.img,x,y,w,h,0,0,w,h);
-  state[c.kind] = x === 0 && y === 0 && w === c.img.naturalWidth && h === c.img.naturalHeight ? c.source : output.toDataURL('image/jpeg',.92);
+  const image = x === 0 && y === 0 && w === c.img.naturalWidth && h === c.img.naturalHeight ? c.source : output.toDataURL('image/jpeg',.92);
+  let item;
+  if (c.kind === 'person') state.person = image;
+  else {
+    item = state.garments.find(item => item.id === c.itemId);
+    if (item) { item.image = image; item.category = 'Вещь'; }
+    else if (state.garments.length < maxGarments) { item = {id:newId(), image, category:'Вещь'}; state.garments.push(item); }
+  }
   state.requestId = null;
   refreshUploads(); $('crop-dialog').close(); await saveDraft();
+  if (c.kind === 'person') showStep('garment');
+  if (item) recognize(item);
 };
 for (const name of ['history', 'link', 'feedback', 'invite']) {
-  $(`${name}-open`).onclick = () => $(`${name}-dialog`).showModal();
+  $(`${name}-open`).onclick = () => { $(`${name}-dialog`).showModal(); if (name === 'history') { $('history-open').classList.add('selected'); $('fitting-open').classList.remove('selected'); } };
   $(`${name}-close`).onclick = () => $(`${name}-dialog`).close();
 }
 $('invite-form').onsubmit = async event => {
@@ -342,11 +481,12 @@ $('link-save').onclick = () => {
   $('link-open').textContent = $('product-url').value.trim() ? '↗ Ссылка на вещь добавлена' : '＋ Ссылка на вещь · необязательно';
   $('link-dialog').close();
 };
+$('history-dialog').addEventListener('close', () => { $('history-open').classList.remove('selected'); $('fitting-open').classList.add('selected'); });
 $('fitting-open').onclick = () => { if (!state.busy) showStep(state.person ? 'garment' : 'person'); };
 async function init() {
   try {
     try { draftDb = await openDraftDb(); const saved = await draft('get');
-      if (saved && Date.now()-saved.created < retention) { state.person = saved.person; state.garment = saved.garment; state.requestId = saved.requestId; draftExpires = saved.created + retention; $('product-url').value = saved.productUrl || ''; }
+      if (saved && Date.now()-saved.created < retention) { state.person = saved.person; state.garments = (saved.garments || (saved.garment ? [{id:newId(),image:saved.garment,category:'Вещь'}] : [])).slice(0,maxGarments); state.requestId = saved.garments ? saved.requestId : null; draftExpires = saved.created + retention; $('product-url').value = saved.productUrl || ''; }
       else await draft('delete');
     } catch { /* No persistent browser storage; photos still work in this tab. */ }
     refreshUploads();
@@ -367,6 +507,7 @@ async function init() {
     const latest = info.jobs.find(j => j.request_id === state.requestId);
     if (pending) { renderJob(pending); pollJob(pending.id); }
     else if (latest) renderJob(latest);
+    else showStep(state.person ? 'garment' : 'person');
   } catch { message('Не удалось подключиться к примерочной. Обновите страницу.'); }
 }
 init();
@@ -374,7 +515,7 @@ setInterval(async () => {
   if (!draftExpires || Date.now() < draftExpires || state.busy) return;
   draftExpires = 0;
   try { await draft('delete'); } catch { /* Retry clearing on the next visit. */ }
-  state.person = state.garment = state.requestId = null;
+  state.person = state.requestId = null; state.garments = [];
   refreshUploads();
   if (state.step !== 'result') { showStep('person'); message('Срок хранения черновиков истёк. Добавьте фото заново.'); }
 }, 60000);
