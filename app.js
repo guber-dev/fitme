@@ -1,12 +1,13 @@
 'use strict';
 // Fragments are not sent to the host or as referrers. Remove the bearer token immediately.
 let linkInvitation = new URLSearchParams(location.hash.slice(1)).get('invite');
-if (linkInvitation !== null) history.replaceState(null, '', location.pathname + location.search);
+let linkReferral = new URLSearchParams(location.hash.slice(1)).get('ref');
+if (linkInvitation !== null || linkReferral !== null) history.replaceState(null, '', location.pathname + location.search);
 const $ = id => document.getElementById(id);
 const apiBase = document.querySelector('meta[name="fitme-api"]')?.content || '';
 const previewOnly = apiBase === 'preview';
 const apiUrl = path => `${previewOnly ? '' : apiBase}${path}`;
-const state = { person: null, garments: [], current: null, jobs: [], config: {}, step: 'person', busy: false, requestId: null, poll: null, crop: null, editingItem: null, uploads: [], importing: false };
+const state = { person: null, garments: [], current: null, jobs: [], config: {}, step: 'person', busy: false, requestId: null, poll: null, editingItem: null, importing: false };
 const categories = ['Вещь','Футболка','Рубашка','Свитер','Худи','Куртка','Пальто','Джинсы','Брюки','Шорты','Юбка','Платье','Костюм','Кроссовки','Обувь','Кепка','Головной убор','Сумка','Очки','Аксессуар'];
 const maxGarments = 6;
 const newId = () => crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
@@ -19,7 +20,7 @@ async function api(path, options = {}) {
   if (previewOnly) {
     if (path === '/api/session') return { generation_enabled: false, remaining: 0, jobs: [], invite_required: false, retention_hours: 24 };
     if (path === '/api/photos' && options.method === 'DELETE') return { deleted: true };
-    throw new Error('Онлайн-примерка ещё подключается. Пока можно проверить загрузку и обрезку фото.');
+    throw new Error('Онлайн-примерка ещё подключается. Пока можно проверить загрузку фото.');
   }
   let response, body;
   try {
@@ -53,18 +54,19 @@ async function saveDraft() {
   catch { /* Browser storage can be unavailable in private mode; keep this tab usable. */ }
 }
 function buttons() {
-  $('to-garment').disabled = !state.person || state.busy;
+  $('to-garment').disabled = !state.person || state.busy || state.importing;
   $('generate').disabled = !state.person || !state.garments.length || state.busy || state.importing || !state.config.generation_enabled || (state.config.invite_required && !state.config.invited) || state.config.remaining === 0;
   $('garment-input').disabled = state.busy || state.importing || state.garments.length >= maxGarments;
   $('change-person').disabled = state.busy || state.importing;
   $('person-input').disabled = state.busy || state.importing;
   $('add-products').hidden = state.step !== 'garment';
   $('add-products').disabled = state.busy || state.importing || state.garments.length >= maxGarments;
-  $('recognition-note').textContent = state.config.classification_enabled && (!state.config.invite_required || state.config.invited) ? 'Определим тип вещи автоматически. Нажмите на неё, чтобы изменить подпись.' : 'Нажмите на вещь, чтобы выбрать тип или обрезать фото.';
+  $('recognition-note').textContent = state.config.classification_enabled && (!state.config.invite_required || state.config.invited) ? 'Определим тип вещи автоматически. Нажмите на неё, чтобы изменить подпись.' : 'Нажмите на вещь, чтобы выбрать тип.';
   $('step-result').disabled = !state.current;
   $('invite-banner').hidden = !state.config.invite_required || state.config.invited;
   $('garment-invite').hidden = !state.config.invite_required || state.config.invited;
-  $('generation-note').textContent = state.config.invite_required && !state.config.invited ? 'Введите приглашение на первом шаге.' : !state.config.generation_enabled ? 'Примерки пока выключены. Можно загрузить и обрезать фото.' : state.config.remaining === 0 ? 'Тестовые попытки закончились.' : `Осталось попыток: ${state.config.remaining}. Одна кнопка — одна примерка.`;
+  renderProfile();
+  $('generation-note').textContent = state.config.invite_required && !state.config.invited ? 'Введите приглашение на первом шаге.' : !state.config.generation_enabled ? 'Примерки пока выключены. Можно загрузить фото.' : state.config.remaining === 0 ? 'Тестовые попытки закончились.' : `Осталось попыток: ${state.config.remaining}. Одна кнопка — одна примерка.`;
 }
 function showStep(step) {
   if (state.busy && step !== 'result') return;
@@ -97,7 +99,6 @@ function setPhoto(src) {
   else if (!src) $('main-photo').removeAttribute('src');
 }
 function refreshUploads() {
-  $('person-crop-open').hidden = !state.person;
   $('person-upload-label').textContent = state.person ? 'Заменить своё фото' : 'Выбрать своё фото';
   document.querySelector('.app-shell').classList.toggle('has-person', !!state.person);
   renderGarments();
@@ -167,22 +168,29 @@ $('item-remove').onclick = async () => {
   state.garments = state.garments.filter(item => item.id !== state.editingItem);
   state.requestId = null; $('item-dialog').close(); refreshUploads(); await saveDraft();
 };
-$('item-crop').onclick = () => {
-  const item = state.garments.find(item => item.id === state.editingItem); if (!item) return;
-  $('item-dialog').close(); openCrop('garment', item.image, item.id);
-};
 async function selectFiles(kind, files) {
-  if (state.busy || state.importing || $('crop-dialog').open) return;
-  if (kind === 'person') return selectFile(kind, files[0]);
+  if (state.busy || state.importing || !files.length) return;
+  const selected = kind === 'person' ? files.slice(0, 1) : files;
   const available = maxGarments - state.garments.length;
-  if (files.length > available) { message(`Можно добавить ещё ${available} фото. Выберите до ${maxGarments} вещей на образ.`); return; }
-  state.uploads = Array.from(files); await nextUpload();
-}
-async function nextUpload() {
-  const file = state.uploads.shift();
-  state.importing = !!file;
-  buttons(); renderGarments();
-  if (file) await selectFile('garment', file);
+  if (kind === 'garment' && selected.length > available) {
+    message(`Можно добавить ещё ${available} фото. Выберите до ${maxGarments} вещей на образ.`); return;
+  }
+  state.importing = true; buttons(); renderGarments(); message();
+  try {
+    for (const file of selected) {
+      const image = await prepareFile(file);
+      if (!image) continue;
+      state.requestId = null;
+      if (kind === 'person') state.person = image;
+      else {
+        const item = {id:newId(), image, category:'Вещь'};
+        state.garments.push(item); recognize(item);
+      }
+      refreshUploads(); await saveDraft();
+    }
+    if (kind === 'person') showStep('garment');
+  } catch (error) { message(error.message); }
+  finally { state.importing = false; buttons(); renderGarments(); }
 }
 async function loadImage(src) {
   const img = new Image();
@@ -208,15 +216,6 @@ async function prepareFile(file) {
     return canvas.toDataURL('image/jpeg', .91);
   } finally { URL.revokeObjectURL(url); }
 }
-async function selectFile(kind, file) {
-  if (state.busy) return;
-  message();
-  try {
-    const data = await prepareFile(file);
-    if (!data) return;
-    await openCrop(kind, data);
-  } catch (error) { message(error.message); state.uploads = []; state.importing = false; buttons(); renderGarments(); }
-}
 for (const kind of ['person', 'garment']) {
   $(`${kind}-input`).addEventListener('change', e => { selectFiles(kind, Array.from(e.target.files)); e.target.value = ''; });
   const zone = $(`${kind}-zone`);
@@ -232,6 +231,37 @@ $('garment-invite').onclick = () => $('invite-dialog').showModal();
 $('change-person').onclick = () => $('person-input').click();
 $('add-products').onclick = () => $('garment-input').click();
 $('product-url').oninput = () => { state.requestId = null; saveDraft(); };
+function renderProfile() {
+  const config = state.config;
+  $('profile-remaining').textContent = Number.isFinite(config.remaining) ? String(config.remaining) : '—';
+  $('profile-invited').textContent = Number.isFinite(config.referral_invited) ? String(config.referral_invited) : '—';
+  $('profile-referral-stats').textContent = `Начали примерять: ${config.referral_activated || 0} · Начислено попыток: ${config.referral_bonus || 0}`;
+  $('referral-share').hidden = !config.invited;
+  $('profile-invite').hidden = !config.invite_required || config.invited;
+  if (!config.invited) {
+    $('referral-note').textContent = config.invite_required ? 'Примите приглашение, чтобы получить свою ссылку.' : 'Реферальная программа доступна участникам по приглашению.';
+    $('referral-link-box').hidden = true;
+  }
+}
+$('profile-invite').onclick = () => { $('history-dialog').close(); $('invite-dialog').showModal(); };
+$('referral-share').onclick = async () => {
+  const button = $('referral-share'); button.disabled = true;
+  try {
+    if (!$('referral-url').value) {
+      const data = await api('/api/referral-link', {method:'POST', body:'{}'});
+      $('referral-url').value = `${location.origin}${location.pathname}#ref=${encodeURIComponent(data.token)}`;
+    }
+    $('referral-link-box').hidden = false;
+    try {
+      await navigator.clipboard.writeText($('referral-url').value);
+      $('referral-note').textContent = 'Ссылка скопирована. Отправьте её другу!';
+    } catch {
+      $('referral-url').focus(); $('referral-url').select();
+      $('referral-note').textContent = 'Скопируйте выделенную ссылку и отправьте другу.';
+    }
+  } catch (error) { $('referral-note').textContent = error.message; }
+  finally { button.disabled = false; }
+};
 
 async function session() {
   const info = await api('/api/session');
@@ -373,95 +403,8 @@ async function backToPhotos(clearGarment) {
 $('another').onclick = () => backToPhotos(true);
 $('retry-edit').onclick = () => backToPhotos(false);
 
-// Cropping is local. Product recognition runs only after the crop is accepted.
-async function openCrop(kind, source = state[kind], itemId = null) {
-  if (state.busy || !source || $('crop-dialog').open) return;
-  try {
-    const img = await loadImage(source);
-    if (state.busy || $('crop-dialog').open) return;
-    const scale = Math.min(1, 700 / Math.max(img.naturalWidth, img.naturalHeight));
-    const canvas = $('crop-canvas'); canvas.width = Math.round(img.naturalWidth * scale); canvas.height = Math.round(img.naturalHeight * scale);
-    // Explicit CSS dimensions preserve the image ratio even in a short viewport.
-    canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
-    canvas.style.width = `min(100%, ${canvas.width}px, calc(42dvh * ${canvas.width / canvas.height}))`;
-    state.crop = { kind, img, source, itemId, rect: [0, 0, canvas.width, canvas.height], start: null };
-    $('crop-title').textContent = kind === 'person' ? 'Ваше фото' : 'Фото вещи';
-    $('crop-help').textContent = kind === 'person' ? 'Для полного образа оставьте человека в полный рост. Выделите область пальцем или мышью либо используйте всё фото.' : 'Оставьте одну вещь без лишних деталей. Выделите область пальцем или мышью либо используйте всё фото.';
-    $('crop-error').hidden = true;
-    drawCrop(); $('crop-dialog').showModal();
-  } catch { message('Не удалось открыть фото для кадрирования.'); state.uploads = []; state.importing = false; buttons(); renderGarments(); }
-}
-$('person-crop-open').onclick = () => openCrop('person');
-function drawCrop() {
-  const canvas = $('crop-canvas'), ctx = canvas.getContext('2d'), c = state.crop;
-  if (!c) return;
-  ctx.drawImage(c.img, 0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#20332988'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const [x, y, w, h] = c.rect;
-  ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip(); ctx.drawImage(c.img, 0, 0, canvas.width, canvas.height); ctx.restore();
-  ctx.strokeStyle = '#e0f2b3'; ctx.lineWidth = 3; ctx.strokeRect(x+1, y+1, Math.max(0,w-2), Math.max(0,h-2));
-}
-function cropPoint(event) {
-  const c = $('crop-canvas'), r = c.getBoundingClientRect();
-  // The canvas CSS keeps the same aspect ratio, so coordinates map directly.
-  return [Math.max(0, Math.min(c.width, (event.clientX-r.left)*c.width/r.width)), Math.max(0, Math.min(c.height, (event.clientY-r.top)*c.height/r.height))];
-}
-$('crop-canvas').onpointerdown = e => { if (!state.crop || state.crop.start || !e.isPrimary) return; state.crop.previousRect = [...state.crop.rect]; state.crop.start = cropPoint(e); $('crop-canvas').setPointerCapture(e.pointerId); };
-$('crop-canvas').onpointermove = e => {
-  if (!state.crop?.start) return;
-  const [a,b] = state.crop.start, [x,y] = cropPoint(e);
-  state.crop.rect = [Math.min(a,x), Math.min(b,y), Math.abs(a-x), Math.abs(b-y)]; drawCrop();
-};
-$('crop-canvas').onpointerup = () => { if (state.crop) state.crop.start = null; };
-$('crop-canvas').onpointercancel = () => { if (state.crop) { state.crop.rect = state.crop.previousRect; state.crop.start = null; drawCrop(); } };
-$('crop-canvas').onkeydown = event => {
-  if (!state.crop) return;
-  const canvas = $('crop-canvas');
-  let [x,y,w,h] = state.crop.rect;
-  const step = event.shiftKey ? 20 : 5;
-  if (event.key === 'ArrowLeft') x -= step;
-  else if (event.key === 'ArrowRight') x += step;
-  else if (event.key === 'ArrowUp') y -= step;
-  else if (event.key === 'ArrowDown') y += step;
-  else if (['+', '=', '-'].includes(event.key)) {
-    const factor = event.key === '-' ? 1.1 : .9;
-    const nw = Math.min(canvas.width, Math.max(30, w * factor));
-    const nh = Math.min(canvas.height, Math.max(30, h * factor));
-    x += (w - nw)/2; y += (h - nh)/2; w = nw; h = nh;
-  } else return;
-  event.preventDefault();
-  state.crop.rect = [Math.max(0,Math.min(canvas.width-w,x)), Math.max(0,Math.min(canvas.height-h,y)), w,h];
-  drawCrop();
-};
-$('crop-reset').onclick = () => { state.crop.rect = [0,0,$('crop-canvas').width,$('crop-canvas').height]; drawCrop(); };
-$('crop-close').onclick = () => $('crop-dialog').close();
-$('crop-dialog').addEventListener('close', () => { state.crop = null; const canvas = $('crop-canvas'); canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height); if (state.importing) nextUpload(); });
-$('crop-apply').onclick = async () => {
-  const c = state.crop;
-  if (!c || state.busy) return;
-  const canvas = $('crop-canvas');
-  const [rx,ry,rw,rh] = c.rect;
-  const x = Math.round(rx * c.img.naturalWidth / canvas.width), y = Math.round(ry * c.img.naturalHeight / canvas.height);
-  const w = Math.min(c.img.naturalWidth-x, Math.round(rw * c.img.naturalWidth / canvas.width));
-  const h = Math.min(c.img.naturalHeight-y, Math.round(rh * c.img.naturalHeight / canvas.height));
-  if (w < 128 || h < 128) { $('crop-error').textContent = 'Слишком маленький кадр. Выделите область побольше (минимум 128 × 128).'; $('crop-error').hidden = false; return; }
-  const output = document.createElement('canvas'); output.width = w; output.height = h;
-  output.getContext('2d').drawImage(c.img,x,y,w,h,0,0,w,h);
-  const image = x === 0 && y === 0 && w === c.img.naturalWidth && h === c.img.naturalHeight ? c.source : output.toDataURL('image/jpeg',.92);
-  let item;
-  if (c.kind === 'person') state.person = image;
-  else {
-    item = state.garments.find(item => item.id === c.itemId);
-    if (item) { item.image = image; item.category = 'Вещь'; }
-    else if (state.garments.length < maxGarments) { item = {id:newId(), image, category:'Вещь'}; state.garments.push(item); }
-  }
-  state.requestId = null;
-  refreshUploads(); $('crop-dialog').close(); await saveDraft();
-  if (c.kind === 'person') showStep('garment');
-  if (item) recognize(item);
-};
 for (const name of ['history', 'link', 'feedback', 'invite']) {
-  $(`${name}-open`).onclick = () => { $(`${name}-dialog`).showModal(); if (name === 'history') { $('history-open').classList.add('selected'); $('fitting-open').classList.remove('selected'); } };
+  $(`${name}-open`).onclick = () => { $(`${name}-dialog`).showModal(); if (name === 'history') { $('history-dialog').scrollTop = 0; session().catch(() => { $('referral-note').textContent = 'Не удалось обновить профиль. Закройте и откройте его ещё раз.'; }); $('history-open').classList.add('selected'); $('fitting-open').classList.remove('selected'); } };
   $(`${name}-close`).onclick = () => $(`${name}-dialog`).close();
 }
 $('invite-form').onsubmit = async event => {
@@ -502,6 +445,14 @@ async function init() {
         $('invite-dialog').showModal();
         linkInvitation = null;
       }
+    }
+    if (linkReferral !== null) {
+      try {
+        info = await api('/api/referral', {method:'POST', body:JSON.stringify({code:linkReferral})});
+        info = await session();
+        message('Приглашение принято. Запустите первую генерацию, чтобы активировать бонус для друга.');
+      } catch (error) { message(error.message + ' Попросите друга отправить ссылку ещё раз.'); }
+      linkReferral = null;
     }
     const pending = info.jobs.find(j => ['queued','running'].includes(j.status));
     const latest = info.jobs.find(j => j.request_id === state.requestId);

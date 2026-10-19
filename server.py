@@ -186,7 +186,15 @@ class Store:
         return bool(self.invite_hashes or self.admin_hash)
 
     def invited(self, db, participant):
-        return participant in self.invite_hashes or invitations.active(db, participant)
+        return bool(participant and (participant in self.invite_hashes or invitations.active(db, participant) or
+                       db.execute('SELECT 1 FROM referral_claims WHERE friend_id=?', (participant,)).fetchone()))
+
+    def referral_bonus(self, db, participant=None):
+        if participant:
+            row = db.execute('SELECT count(*) FROM referral_claims WHERE referrer_id=? AND rewarded IS NOT NULL', (participant,)).fetchone()
+        else:
+            row = db.execute('SELECT count(*) FROM referral_claims WHERE rewarded IS NOT NULL').fetchone()
+        return int(row[0]) * 5
 
     def unlock(self, sid, code):
         if not self.invites_required:
@@ -207,12 +215,21 @@ class Store:
         with self.db() as db:
             used = self.used(db, sid)
             total = db.execute("SELECT count(*) FROM attempts").fetchone()[0]
-            invited = self.invited(db, self.participant(db, sid))
+            participant = self.participant(db, sid)
+            invited = self.invited(db, participant)
+            bonus = self.referral_bonus(db, participant) if participant else 0
+            referral_invited = db.execute('SELECT count(*) FROM referral_claims WHERE referrer_id=?', (participant,)).fetchone()[0]
+            total_bonus = self.referral_bonus(db)
+            remaining = max(0, min(self.session_limit+bonus-used, self.total_limit+total_bonus-total))
+            if self.invites_required and not invited:
+                remaining = 0
         return {"generation_enabled": bool(self.provider),
                 "classification_enabled": callable(getattr(self.provider, 'classify', None)),
                 "max_garments": MAX_GARMENTS,
-                "remaining": max(0, min(self.session_limit-used, self.total_limit-total)),
+                "remaining": remaining,
                 "invite_required": self.invites_required, "invited": invited,
+                "referral_bonus": bonus,
+                "referral_invited": referral_invited, "referral_activated": bonus // 5,
                 "retention_hours": 24}
 
     def create(self, sid, body):
@@ -259,7 +276,9 @@ class Store:
             total = db.execute("SELECT count(*) FROM attempts").fetchone()[0]
             used = self.used(db, sid)
             participant = self.participant(db, sid)
-            if used >= self.session_limit or total >= self.total_limit:
+            bonus = self.referral_bonus(db, participant) if participant else 0
+            total_bonus = self.referral_bonus(db)
+            if used >= self.session_limit+bonus or total >= self.total_limit+total_bonus:
                 raise Problem(429, "Лимит тестовых примерок исчерпан. Сообщите владельцу приложения.")
             jid, now = secrets.token_hex(16), time.time()
             db.execute("INSERT INTO jobs (id,session,request_id,fingerprint,status,created,person,garment,product_url,garments) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -271,6 +290,7 @@ class Store:
               (jid, user_id, sid, 'queued', now, person, garment, link,
                getattr(self.provider, 'model', None), getattr(self.provider, 'prompt', None), garments))
             db.execute("INSERT INTO attempts VALUES (?,?)", (sid, now))
+            invitations.reward_first_generation(db, participant)
             row = db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         return self.public(row)
 
@@ -379,7 +399,9 @@ class Store:
               c.last_generation,COALESCE(m.successful,0) AS successful,
               COALESCE(m.errors,0) AS errors,COALESCE(m.pending,0) AS pending,m.average_seconds,
               t.active_seconds,t.last_seen,COALESCE(v.visits,0) AS visits,
-              CASE WHEN i.id IS NOT NULL THEN 1 ELSE 0 END AS invitation_known
+              CASE WHEN i.id IS NOT NULL OR EXISTS
+                (SELECT 1 FROM referral_claims r WHERE r.friend_id=u.user_id)
+                THEN 1 ELSE 0 END AS invitation_known
               FROM users u LEFT JOIN counts c ON c.user_id=u.user_id
               LEFT JOIN metrics m ON m.user_id=u.user_id
               LEFT JOIN invitations i ON i.token_hash=u.user_id
@@ -642,6 +664,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, invitations.listing(store))
             if self.command == 'POST':
                 return self.respond(201, invitations.create(store, self.read_json(1024).get('label')))
+        if path == '/api/admin/referrals' and self.command == 'GET':
+            return self.respond(200, {'referrals': invitations.listing(store)['referrals']})
         match = re.fullmatch(r'/api/admin/invitations/([a-f0-9]{32})/revoke', path)
         if match and self.command == 'POST':
             return self.respond(200, invitations.revoke(store, match[1]))
@@ -697,6 +721,11 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json(MAX_BODY)
                 if path == "/api/invite":
                     return self.respond(200, self.server.store.unlock(sid, body.get("code")))
+                if path == "/api/referral":
+                    invitations.claim_referral(self.server.store, sid, body.get("code"))
+                    return self.respond(200, self.server.store.config(sid))
+                if path == "/api/referral-link":
+                    return self.respond(201, invitations.create_referral(self.server.store, sid))
                 if path == "/api/jobs":
                     return self.respond(202, self.server.store.create(sid, body))
                 if path == '/api/classify':

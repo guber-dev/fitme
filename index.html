@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#19191d"><meta name="description" content="Ваша личная примерочная. Посмотрите, как выглядит вещь на вас.">
   <meta name="fitme-api" content="">
-  <title>fitme — ваша примерочная</title><link rel="icon" href="./favicon.svg"><link rel="stylesheet" href="./style.css?v=20261018-outfits-1"><script src="./app.js?v=20261018-outfits-1" defer></script>
+  <title>fitme — ваша примерочная</title><link rel="icon" href="./favicon.svg"><link rel="stylesheet" href="./style.css?v=20261018-profile-1"><script src="./app.js?v=20261018-profile-1" defer></script>
 </head>
 <body>
 <div class="app-shell">
@@ -29,7 +29,6 @@
         <section id="person-panel" class="panel">
           <div id="invite-banner" hidden><button id="invite-open" class="invite-button">Ввести код приглашения <span>→</span></button></div><div class="panel-heading"><h1>Сначала — ваше фото</h1><span class="step-count">01 / 03</span></div><p class="description">Для полного образа выберите фото в полный рост. Руки не закрывают одежду.</p>
           <label class="upload-zone" id="person-zone"><input id="person-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif"><span class="upload-icon"><svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><rect x="4" y="5" width="20" height="19" rx="5" stroke="currentColor" stroke-width="1.5"/><path d="m7 20 5-6 4 4 3-3 5 6M14 2v8m-4-4 4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span><strong id="person-upload-label">Выбрать своё фото</strong><small>JPG, PNG, WebP · до 15 МБ</small></label>
-          <button id="person-crop-open" class="text-button" hidden>Кадрировать своё фото ↗</button>
           <button id="to-garment" class="primary" disabled>Собрать образ <span>→</span></button>
         </section>
         <section id="garment-panel" class="panel" hidden>
@@ -51,15 +50,33 @@
       </aside>
     </div>
   </main>
-  <nav class="app-nav" aria-label="Разделы"><button id="fitting-open" class="selected"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m3 10 9-7 9 7v10H3z"/><path d="M9 20v-7h6v7"/></svg><span>Примерочная</span></button><button id="history-open"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="6" width="14" height="15" rx="3"/><path d="M8 3h8m-7 9 3-3 3 3m-3-3v8"/></svg><span>Мои образы</span><span id="history-count" class="history-count" hidden></span></button></nav>
+  <nav class="app-nav" aria-label="Разделы"><button id="fitting-open" class="selected"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m3 10 9-7 9 7v10H3z"/><path d="M9 20v-7h6v7"/></svg><span>Примерочная</span></button><button id="history-open"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span>Мой профиль</span><span id="history-count" class="history-count" hidden></span></button></nav>
 </div>
 <dialog id="invite-dialog"><div class="dialog-heading"><h2>Вы в списке?</h2><button id="invite-close" class="icon-button" aria-label="Закрыть приглашение">×</button></div><p>fitme пока тестируют друзья. Введите свой код приглашения.</p><form id="invite-form"><label for="invite-code">Код приглашения</label><input id="invite-code" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" minlength="16" maxlength="128" required><button id="invite-submit" class="primary" type="submit">Войти в примерочную</button><p id="invite-note" role="status"></p></form></dialog>
-<dialog id="history-dialog" class="history-page"><div class="dialog-heading"><div><div class="eyebrow">ВАША КОЛЛЕКЦИЯ</div><h2>Мои образы<span class="accent-dot">.</span></h2></div><button id="history-close" class="icon-button" aria-label="Закрыть историю">×</button></div><p id="history-empty">Ваш стиль, в одном месте.<br>Соберите первый образ в примерочной — он появится здесь на 24 часа.</p>    <section class="recent" id="recent-section" hidden><div class="recent-heading"><h3>Собрано вами</h3><span>24 часа</span></div><div id="recent-list" class="recent-list"></div></section>
+<dialog id="history-dialog" class="history-page profile-page" aria-labelledby="profile-title">
+  <div class="dialog-heading"><div><div class="eyebrow">ВАШЕ ПРОСТРАНСТВО</div><h2 id="profile-title">Мой профиль<span class="accent-dot">.</span></h2></div><button id="history-close" class="icon-button" aria-label="Закрыть профиль">×</button></div>
+  <p class="profile-identity">Пока профиль привязан к этому браузеру. Регистрация появится позже.</p>
+  <div class="profile-stats" aria-label="Ваши генерации и приглашения">
+    <div><strong id="profile-remaining">—</strong><span>Бесплатных попыток осталось</span></div>
+    <div><strong id="profile-invited">—</strong><span>Друзей приглашено</span></div>
+  </div>
+  <section class="profile-referrals" aria-labelledby="referral-title"><div class="eyebrow">ПРИМЕРЯЙТЕ ВМЕСТЕ</div><h3 id="referral-title">Друзьям — новый образ.<br>Вам — ещё 5 попыток.</h3>
+    <p>Отправьте свою ссылку. Когда друг запустит первую генерацию, вам начислят 5 дополнительных попыток.</p>
+    <p id="profile-referral-stats" class="micro"></p>
+    <button id="referral-share" class="primary" type="button" hidden>Пригласить друга <span>↗</span></button>
+    <div id="referral-link-box" hidden><label for="referral-url">Ваша ссылка</label><input id="referral-url" type="text" readonly autocomplete="off" spellcheck="false"></div>
+    <p id="referral-note" class="micro" role="status" aria-live="polite"></p>
+    <button id="profile-invite" class="secondary" type="button" hidden>Ввести приглашение</button>
+  </section>
+  <section class="recent" aria-labelledby="profile-feed-title"><div class="recent-heading"><h3 id="profile-feed-title">Лента ваших образов</h3><span>Фото доступны 24 часа</span></div>
+    <p id="history-empty">Здесь будут ваши примерки.<br>Соберите первый образ в примерочной.</p>
+    <div id="recent-section" hidden><div id="recent-list" class="recent-list"></div></div>
+  </section>
 </dialog>
-<dialog id="item-dialog" aria-labelledby="item-title"><div class="dialog-heading"><h2 id="item-title">Вещь в образе</h2><button id="item-close" class="icon-button" aria-label="Закрыть вещь">×</button></div><img id="item-photo" class="item-photo" alt="Фото выбранной вещи"><label for="item-category" class="field-label">Тип вещи</label><select id="item-category"></select><p id="item-recognition" class="micro" role="status"></p><button id="item-crop" class="secondary">Обрезать фото ↗</button><button id="item-remove" class="danger-button">Убрать из образа</button></dialog>
+<dialog id="item-dialog" aria-labelledby="item-title"><div class="dialog-heading"><h2 id="item-title">Вещь в образе</h2><button id="item-close" class="icon-button" aria-label="Закрыть вещь">×</button></div><img id="item-photo" class="item-photo" alt="Фото выбранной вещи"><label for="item-category" class="field-label">Тип вещи</label><select id="item-category"></select><p id="item-recognition" class="micro" role="status"></p><button id="item-remove" class="danger-button">Убрать из образа</button></dialog>
 <dialog id="link-dialog"><div class="dialog-heading"><h2>Ссылка на вещь</h2><button id="link-close" class="icon-button" aria-label="Закрыть ссылку">×</button></div>          <label for="product-url" class="sr-only">Ссылка на товар</label><input id="product-url" type="url" placeholder="https://…" maxlength="2048"><p>Сохраним, чтобы вы могли вернуться к покупке.</p>
 <button id="link-save" class="primary">Готово</button></dialog>
 <dialog id="feedback-dialog"><div class="dialog-heading"><h2>Как вам образ?</h2><button id="feedback-close" class="icon-button" aria-label="Закрыть оценку">×</button></div><div class="feedback"><strong>Как вам примерка?</strong><div><button data-rating="helpful">♡ Нравится</button><button data-rating="person">Не похож(а) на себя</button><button data-rating="garment">Вещь отличается</button><button data-rating="unhelpful">Не помогло</button></div><span id="feedback-note" aria-live="polite"></span></div></dialog>
-  <dialog id="crop-dialog" aria-labelledby="crop-title"><div class="dialog-heading"><div><div class="eyebrow">ОСТАВЬТЕ ГЛАВНОЕ</div><h2 id="crop-title">Кадрирование фото</h2></div><button id="crop-close" class="icon-button" aria-label="Закрыть обрезку">×</button></div><p id="crop-help">Выделите нужную область пальцем или мышью. Можно оставить фото целиком.</p><canvas id="crop-canvas" width="640" height="640" tabindex="0" role="img" aria-label="Область кадрирования" aria-describedby="crop-help crop-keyboard"></canvas><p id="crop-keyboard" class="micro">С клавиатуры: + / − меняют размер кадра, стрелки перемещают его.</p><p id="crop-error" role="alert" hidden></p><div class="crop-actions"><button id="crop-reset" class="secondary">Всё фото</button><button id="crop-apply" class="primary">Использовать <span>✓</span></button></div></dialog>
+
 </body>
 </html>

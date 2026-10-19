@@ -4,7 +4,7 @@ let archiveOffset=0, archiveRevision=0;
 let ownerKey = new URLSearchParams(location.hash.slice(1)).get('admin');
 if (location.hash) history.replaceState(null, '', location.pathname);
 function notice(text='') { $('notice').textContent=text; $('notice').hidden=!text; }
-function loggedIn(value) { $('login-panel').hidden=value; $('owner-panel').hidden=!value; if(!value){$('invite-url').value='';$('new-link').hidden=true;$('invitations').replaceChildren();$('users').replaceChildren();$('stats').replaceChildren();$('engagement').replaceChildren();$('generations').replaceChildren();$('photo-dialog').close();$('full-photo').removeAttribute('src');$('photo-download').removeAttribute('href');archiveRevision++;} }
+function loggedIn(value) { $('login-panel').hidden=value; $('owner-panel').hidden=!value; if(!value){$('invite-url').value='';$('new-link').hidden=true;$('invitations').replaceChildren();$('referrals').replaceChildren();$('users').replaceChildren();$('stats').replaceChildren();$('engagement').replaceChildren();$('generations').replaceChildren();$('photo-dialog').close();$('full-photo').removeAttribute('src');$('photo-download').removeAttribute('href');archiveRevision++;} }
 async function api(path, body) {
   let response;
   try { response=await fetch('/api/admin/'+path,{method:body===undefined?'GET':'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Fitme-Request':'1'},body:body===undefined?undefined:JSON.stringify(body)}); }
@@ -15,6 +15,10 @@ async function api(path, body) {
 }
 async function refresh(){
   const [info, dashboard]=await Promise.all([api('invitations'),api('dashboard')]);loggedIn(true);renderDashboard(dashboard);
+  const referralInfo = {referrals:info.referrals || []};
+  $('referrals').replaceChildren();
+  for(const referral of referralInfo.referrals){const row=document.createElement('tr');for(const value of [dashboard.users.find(user=>user.user_id===referral.referrer_id)?.label || 'Участник '+referral.referrer_id.slice(0,8),referral.invited,referral.activated,referral.reward_generations])row.append(element('td',String(value)));$('referrals').append(row);}
+  $('referrals-empty').hidden=referralInfo.referrals.length>0;
   $('balance').textContent=`${info.remaining_total} / ${info.total_limit}`;
   $('create-button').disabled=info.remaining_total===0;
   $('invitations').replaceChildren();
@@ -125,4 +129,3 @@ $('photo-close').onclick=()=>{$('photo-dialog').close();};
 $('photo-dialog').addEventListener('close',()=>{$('full-photo').removeAttribute('src');$('photo-download').removeAttribute('href');});
 
 (async()=>{try{if(ownerKey){const key=ownerKey;ownerKey=null;await login(key);}else await refresh();}catch(e){if(e.message!=='Войдите с ключом владельца.')notice(e.message);}})();
-
